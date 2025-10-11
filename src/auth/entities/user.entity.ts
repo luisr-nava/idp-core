@@ -1,6 +1,6 @@
 import { Column, Entity, PrimaryGeneratedColumn } from 'typeorm';
-@Entity('auth')
-export class Auth {
+@Entity('user')
+export class User {
   @PrimaryGeneratedColumn()
   id: string;
 
@@ -18,7 +18,7 @@ export class Auth {
 
   @Column()
   proyectId: string;
-  
+
   @Column({ default: false })
   is_verify: boolean;
 }
