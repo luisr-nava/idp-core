@@ -7,9 +7,9 @@ interface EnvVars {
   DB_PASSWORD: string;
   DB_NAME: string;
   JWT_SECRET: string;
-  GOOGLE_CLIENT_ID: string;
-  GOOGLE_CLIENT_SECRET: string;
-  GOOGLE_REDIRECT_URI: string;
+  // GOOGLE_CLIENT_ID: string;
+  // GOOGLE_CLIENT_SECRET: string;
+  // GOOGLE_REDIRECT_URI: string;
 }
 
 const log = new Logger('EnvVars - ');
@@ -20,9 +20,9 @@ const envVarsSchema = joi
     DB_PASSWORD: joi.string().required(),
     DB_NAME: joi.string().required(),
     JWT_SECRET: joi.string().required(),
-    GOOGLE_CLIENT_ID: joi.string().required(),
-    GOOGLE_CLIENT_SECRET: joi.string().required(),
-    GOOGLE_REDIRECT_URI: joi.string().required(),
+    // GOOGLE_CLIENT_ID: joi.string().required(),
+    // GOOGLE_CLIENT_SECRET: joi.string().required(),
+    // GOOGLE_REDIRECT_URI: joi.string().required(),
   })
   .unknown(true);
 
@@ -40,7 +40,7 @@ export const envs = {
   dbPassword: envVars.DB_PASSWORD,
   dbName: envVars.DB_NAME,
   jwtSecret: envVars.JWT_SECRET,
-  clientID: envVars.GOOGLE_CLIENT_ID,
-  clientSecret: envVars.GOOGLE_CLIENT_SECRET,
-  googleRedirectUri: envVars.GOOGLE_REDIRECT_URI,
+  // clientID: envVars.GOOGLE_CLIENT_ID,
+  // clientSecret: envVars.GOOGLE_CLIENT_SECRET,
+  // googleRedirectUri: envVars.GOOGLE_REDIRECT_URI,
 };
