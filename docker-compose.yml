@@ -6,12 +6,38 @@ services:
     restart: always
     ports:
       - "5432:5432"
+    container_name: authdb
     environment:
-      POSTGRES_PASSWORD: ${DB_PASSWORD}
-      POSTGRES_DB: ${DB_NAME}
-    container_name: ${DB_NAME}
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: authdb
     volumes:
       - postgres-db:/var/lib/postgresql/data
+    networks:
+      - idp-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d authdb"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  auth-service:
+    build: .
+    container_name: auth_service
+    restart: unless-stopped
+    env_file: .env
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "3001:3000"
+    networks:
+      - idp-network
+    command: ["npm", "run", "start:prod"]
+
+networks:
+  idp-network:
+    driver: bridge
 
 volumes:
   postgres-db:
