@@ -5,7 +5,7 @@ services:
     image: postgres:16.1
     restart: always
     ports:
-      - "5432:5432"
+      - '5432:5432'
     container_name: authdb
     environment:
       POSTGRES_USER: postgres
@@ -16,7 +16,7 @@ services:
     networks:
       - idp-network
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres -d authdb"]
+      test: ['CMD-SHELL', 'pg_isready -U postgres -d authdb']
       interval: 5s
       timeout: 3s
       retries: 5
@@ -30,14 +30,17 @@ services:
       db:
         condition: service_healthy
     ports:
-      - "3001:3000"
+      - '3001:3000'
     networks:
       - idp-network
-    command: ["npm", "run", "start:prod"]
+      - microservices-network
+    command: ['npm', 'run', 'start:prod']
 
 networks:
   idp-network:
     driver: bridge
+  microservices-network:
+    external: true
 
 volumes:
   postgres-db:
