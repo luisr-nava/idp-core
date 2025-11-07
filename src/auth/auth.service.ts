@@ -10,6 +10,7 @@ import { CreateUserDto } from './dto/create-user.dto';
 import * as bcrypt from 'bcrypt';
 import { LoginDto } from './dto/login.dto';
 import { JwtService } from '@nestjs/jwt';
+import { UpdateUserDto } from './dto/update-user.dto';
 
 @Injectable()
 export class AuthService {
@@ -21,16 +22,9 @@ export class AuthService {
   async createUser(createUserDto: CreateUserDto) {
     const { password, ...user } = createUserDto;
 
-    const userExist = await this.authRepository.findOneBy({
-      email: user.email,
-      proyectId: user.proyectId,
-    });
     let errors: string[] = [];
 
-    if (userExist) {
-      errors.push(`El usuario con el ${user.email} ya esta registrado`);
-      throw new ConflictException(errors);
-    }
+    await this.validateUserExistence(user.email, user.projectId, errors);
 
     const createUser = this.authRepository.create({
       ...user,
@@ -38,18 +32,18 @@ export class AuthService {
     });
 
     await this.authRepository.save(createUser);
-
+    // TODO: create sendEmail
     return {
       message: 'Usuario creado correctamente',
     };
   }
 
   async login(loginDto: LoginDto) {
-    const { email, password, proyectId } = loginDto;
+    const { email, password, projectId } = loginDto;
 
     const user = await this.authRepository.findOneBy({
       email,
-      proyectId,
+      projectId,
     });
     let errors: string[] = [];
     if (!user) {
@@ -64,10 +58,71 @@ export class AuthService {
       throw new UnauthorizedException(errors);
     }
     const token = this.getJwtToken({ id: user.id });
+
     return {
       token,
-      user,
+      user: this.sanitizeUser(user),
     };
+  }
+
+  async update(id: string, updateUserDto: UpdateUserDto) {
+    let errors: string[] = [];
+    const { password, ...user } = updateUserDto;
+
+    if ('projectId' in user) {
+      delete user.projectId;
+    }
+
+    const existingUser = await this.authRepository.findOneBy({
+      id,
+      projectId: user.projectId,
+    });
+
+    if (!existingUser) {
+      return { success: false, errors: ['Usuario no encontrado.'] };
+    }
+
+    if (user.email && user.email !== existingUser.email) {
+      await this.validateUserExistence(
+        user.email,
+        existingUser.projectId,
+        errors,
+      );
+    }
+
+    let updatedData: UpdateUserDto = { ...user };
+
+    if (password) {
+      const hashedPassword = await bcrypt.hash(password, 10);
+      updatedData.password = hashedPassword;
+    }
+
+    await this.authRepository.update(id, updatedData);
+
+    return { success: true, message: 'Usuario actualizado correctamente.' };
+  }
+
+  private async validateUserExistence(
+    email: string,
+    projectId: string,
+    errors: string[],
+  ): Promise<void> {
+    const userExist = await this.authRepository.findOneBy({
+      email,
+      projectId,
+    });
+    if (userExist) {
+      errors.push(`El usuario con email: ${email} ya existe.`);
+      throw new ConflictException(errors);
+    }
+  }
+
+  async getUserById(id: string) {
+    const user = await this.authRepository.findOneBy({ id });
+    if (!user) {
+      throw new UnauthorizedException('Usuario no encontrado');
+    }
+    return this.sanitizeUserForProfile(user);
   }
 
   private getJwtToken(payload: { id: string }) {
@@ -75,5 +130,20 @@ export class AuthService {
       expiresIn: '1d',
     });
     return token;
+  }
+
+  private sanitizeUser(user: User) {
+    const { password, createdAt, updatedAt, dni, projectId, ...safeUser } =
+      user;
+
+    const cleanedUser = Object.fromEntries(
+      Object.entries(safeUser).filter(([_, v]) => v != null),
+    );
+
+    return cleanedUser;
+  }
+  private sanitizeUserForProfile(user: User) {
+    const { password, projectId, ...rest } = user;
+    return rest;
   }
 }

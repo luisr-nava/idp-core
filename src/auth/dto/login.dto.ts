@@ -7,5 +7,5 @@ export class LoginDto {
   @IsString()
   password: string;
   @IsString()
-  proyectId: string;
+  projectId: string;
 }

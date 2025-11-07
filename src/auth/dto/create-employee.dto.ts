@@ -1,0 +1,11 @@
+import { OmitType } from '@nestjs/mapped-types';
+import { CreateUserDto } from './create-user.dto';
+import { IsOptional, IsString } from 'class-validator';
+
+export class CreateEmployeeDto extends OmitType(CreateUserDto, [
+  'projectId',
+] as const) {
+  @IsString()
+  @IsOptional()
+  projectId?: string;
+}

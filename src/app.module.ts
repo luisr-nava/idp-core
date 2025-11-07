@@ -7,8 +7,8 @@ import { typeORMConfig } from './config';
   imports: [
     ConfigModule.forRoot({ isGlobal: true }),
     TypeOrmModule.forRootAsync({
-      useFactory: typeORMConfig,
       inject: [ConfigService],
+      useFactory: typeORMConfig,
     }),
     AuthModule,
   ],
