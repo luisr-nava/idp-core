@@ -11,6 +11,7 @@ import * as bcrypt from 'bcrypt';
 import { LoginDto } from './dto/login.dto';
 import { JwtService } from '@nestjs/jwt';
 import { UpdateUserDto } from './dto/update-user.dto';
+import { envs } from '@/config';
 
 @Injectable()
 export class AuthService {
@@ -57,7 +58,11 @@ export class AuthService {
       errors.push(`La contraseña es incorrecta`);
       throw new UnauthorizedException(errors);
     }
-    const token = this.getJwtToken({ id: user.id });
+    const token = this.getJwtToken({
+      id: user.id,
+      role: user.role,
+      projectId: user.projectId,
+    });
 
     return {
       token,
@@ -102,6 +107,14 @@ export class AuthService {
     return { success: true, message: 'Usuario actualizado correctamente.' };
   }
 
+  async getUserById(id: string) {
+    const user = await this.authRepository.findOneBy({ id });
+    if (!user) {
+      throw new UnauthorizedException('Usuario no encontrado');
+    }
+    return this.sanitizeUserForProfile(user);
+  }
+
   private async validateUserExistence(
     email: string,
     projectId: string,
@@ -117,16 +130,13 @@ export class AuthService {
     }
   }
 
-  async getUserById(id: string) {
-    const user = await this.authRepository.findOneBy({ id });
-    if (!user) {
-      throw new UnauthorizedException('Usuario no encontrado');
-    }
-    return this.sanitizeUserForProfile(user);
-  }
-
-  private getJwtToken(payload: { id: string }) {
+  private getJwtToken(payload: {
+    id: string;
+    role: string;
+    projectId: string;
+  }) {
     const token = this.jwtService.sign(payload, {
+      secret: envs.jwtSecret,
       expiresIn: '1d',
     });
     return token;
