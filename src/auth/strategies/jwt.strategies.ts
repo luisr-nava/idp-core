@@ -1,30 +1,38 @@
 import { Injectable, UnauthorizedException } from '@nestjs/common';
 import { PassportStrategy } from '@nestjs/passport';
-import { InjectRepository } from '@nestjs/typeorm';
-import { Strategy, ExtractJwt } from 'passport-jwt';
-import { User } from '../entities/user.entity';
-import { Repository } from 'typeorm';
+import { ExtractJwt, Strategy } from 'passport-jwt';
 import { ConfigService } from '@nestjs/config';
+import { InjectRepository } from '@nestjs/typeorm';
+import { Repository } from 'typeorm';
+import { User } from '../entities/user.entity';
+import { envs } from '@/config';
 
 @Injectable()
-export class JwtStrategy extends PassportStrategy(Strategy) {
+export class JwtStrategy extends PassportStrategy(Strategy, 'jwt') {
   constructor(
+    private readonly configService: ConfigService,
     @InjectRepository(User)
     private readonly userRepository: Repository<User>,
-    configService: ConfigService,
   ) {
     super({
-      secretOrKey: configService.get('JWT_SECRET')!,
       jwtFromRequest: ExtractJwt.fromAuthHeaderAsBearerToken(),
+      ignoreExpiration: false,
+      secretOrKey: envs.jwtSecret,
     });
   }
 
-  async validate(payload: { id: string }): Promise<User> {
-    const { id } = payload;
+  async validate(payload: { id: string; role: string; projectId: string }) {
+    const { id, projectId } = payload;
 
-    const user = await this.userRepository.findOneBy({ id });
-    if(!user) throw new UnauthorizedException('The Token is not valid')
-    if(!user.isVerify) throw new UnauthorizedException("Please verify your account")
+    if (!id || !projectId) {
+      throw new UnauthorizedException('Token inválido o incompleto');
+    }
+
+    const user = await this.userRepository.findOneBy({ id, projectId });
+    if (!user) {
+      throw new UnauthorizedException('Usuario no encontrado');
+    }
+
     return user;
   }
 }

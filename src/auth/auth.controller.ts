@@ -66,4 +66,10 @@ export class AuthController {
   getUser(@GetUser() user: User) {
     return this.authService.getUserById(user.id);
   }
+
+  @UseGuards(JwtAuthGuard)
+  @Get('get-employees')
+  getEmployees(@GetUser() user: User) {
+    return this.authService.getEmployeesByProject(user.projectId);
+  }
 }

@@ -1,11 +1,12 @@
 import {
   ConflictException,
   Injectable,
+  NotFoundException,
   UnauthorizedException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { User } from './entities/user.entity';
-import { Repository } from 'typeorm';
+import { User, UserRole } from './entities/user.entity';
+import { In, Repository } from 'typeorm';
 import { CreateUserDto } from './dto/create-user.dto';
 import * as bcrypt from 'bcrypt';
 import { LoginDto } from './dto/login.dto';
@@ -62,6 +63,7 @@ export class AuthService {
       id: user.id,
       role: user.role,
       projectId: user.projectId,
+      email: user.email,
     });
 
     return {
@@ -115,6 +117,38 @@ export class AuthService {
     return this.sanitizeUserForProfile(user);
   }
 
+  async getEmployeesByProject(projectId: string) {
+    const employees = await this.authRepository.find({
+      where: {
+        projectId,
+        role: In([UserRole.EMPLOYEE, UserRole.MANAGER]),
+      },
+      select: {
+        id: true,
+        fullName: true,
+        email: true,
+        role: true,
+        phone: true,
+        dni: true,
+        address: true,
+        salary: true,
+        hireDate: true,
+        isActive: true,
+        projectId: true,
+        createdAt: true,
+      },
+      order: { createdAt: 'DESC' },
+    });
+
+    if (!employees.length) {
+      throw new NotFoundException(
+        'No se encontraron empleados para este proyecto',
+      );
+    }
+
+    return employees;
+  }
+
   private async validateUserExistence(
     email: string,
     projectId: string,
@@ -134,6 +168,7 @@ export class AuthService {
     id: string;
     role: string;
     projectId: string;
+    email: string;
   }) {
     const token = this.jwtService.sign(payload, {
       secret: envs.jwtSecret,
@@ -152,6 +187,7 @@ export class AuthService {
 
     return cleanedUser;
   }
+
   private sanitizeUserForProfile(user: User) {
     const { password, projectId, ...rest } = user;
     return rest;
