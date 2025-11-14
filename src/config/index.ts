@@ -1,2 +1,2 @@
-export * from "./envs" 
-export * from "./typeorm.config" 
+export * from './envs';
+export * from './typeorm.config';

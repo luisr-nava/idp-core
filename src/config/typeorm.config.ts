@@ -2,7 +2,9 @@ import { Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { TypeOrmModule, TypeOrmModuleOptions } from '@nestjs/typeorm';
 import { join } from 'path';
-export const typeORMConfig = (configService: ConfigService): TypeOrmModuleOptions => {
+export const typeORMConfig = (
+  configService: ConfigService,
+): TypeOrmModuleOptions => {
   const logger = new Logger('TypeORM');
 
   // Si estás corriendo con npm run start:dev, usamos localhost

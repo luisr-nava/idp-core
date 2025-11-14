@@ -32,9 +32,6 @@ export class User {
   })
   role: UserRole;
 
-  @Column({ default: true })
-  isActive: boolean;
-
   @Column({ default: false })
   isVerify: boolean;
 

@@ -3,62 +3,86 @@ import {
   Injectable,
   NotFoundException,
   UnauthorizedException,
+  BadRequestException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { User, UserRole } from './entities/user.entity';
+import { VerificationCode } from './entities/verification-code.entity';
 import { In, Repository } from 'typeorm';
 import { CreateUserDto } from './dto/create-user.dto';
 import * as bcrypt from 'bcrypt';
 import { LoginDto } from './dto/login.dto';
 import { JwtService } from '@nestjs/jwt';
 import { UpdateUserDto } from './dto/update-user.dto';
+import { UpdateProfileDto } from './dto/update-profile.dto';
+import { MailService } from '@/mail/mail.service';
 import { envs } from '@/config';
+import { v4 as uuidv4 } from 'uuid';
 
 @Injectable()
 export class AuthService {
   constructor(
     @InjectRepository(User)
     private readonly authRepository: Repository<User>,
+    @InjectRepository(VerificationCode)
+    private readonly verificationCodeRepository: Repository<VerificationCode>,
     private readonly jwtService: JwtService,
+    private readonly mailService: MailService,
   ) {}
   async createUser(createUserDto: CreateUserDto) {
     const { password, ...user } = createUserDto;
 
-    let errors: string[] = [];
+    // Generar projectId si es OWNER y no tiene uno
+    let projectId = user.projectId;
+    if (user.role === UserRole.OWNER && !projectId) {
+      projectId = uuidv4();
+    }
 
-    await this.validateUserExistence(user.email, user.projectId, errors);
+    // Validar que el email no exista (para OWNER, validar globalmente; para EMPLOYEE, validar por proyecto)
+    if (user.role === UserRole.OWNER) {
+      await this.validateOwnerEmailUnique(user.email);
+    } else if (projectId) {
+      await this.validateUserExistence(user.email, projectId);
+    }
 
-    const createUser = this.authRepository.create({
+    const newUser = this.authRepository.create({
       ...user,
+      projectId,
       password: bcrypt.hashSync(password, 10),
     });
 
-    await this.authRepository.save(createUser);
-    // TODO: create sendEmail
+    await this.authRepository.save(newUser);
+
+    // Enviar email de verificación con el projectId
+    await this.createAndSendVerificationCode(
+      newUser.id,
+      newUser.email,
+      newUser.fullName,
+      newUser.projectId,
+    );
+
     return {
-      message: 'Usuario creado correctamente',
+      message:
+        'Usuario creado correctamente. Se ha enviado un código de verificación a tu email',
+      projectId: newUser.projectId,
     };
   }
 
   async login(loginDto: LoginDto) {
-    const { email, password, projectId } = loginDto;
+    const { email, password } = loginDto;
 
-    const user = await this.authRepository.findOneBy({
-      email,
-      projectId,
-    });
-    let errors: string[] = [];
+    const user = await this.authRepository.findOneBy({ email });
+
     if (!user) {
-      errors.push(`El usuario con el ${email} no existe`);
-      throw new UnauthorizedException(errors);
+      throw new UnauthorizedException(`El usuario con el email ${email} no existe`);
     }
 
     const isPasswordValid = bcrypt.compareSync(password, user.password);
 
     if (!isPasswordValid) {
-      errors.push(`La contraseña es incorrecta`);
-      throw new UnauthorizedException(errors);
+      throw new UnauthorizedException('La contraseña es incorrecta');
     }
+
     const token = this.getJwtToken({
       id: user.id,
       role: user.role,
@@ -69,39 +93,75 @@ export class AuthService {
     return {
       token,
       user: this.sanitizeUser(user),
+      projectId: user.projectId,
+    };
+  }
+
+  async googleAuth(googleUser: any) {
+    // Buscar si el usuario ya existe por email
+    let user = await this.authRepository.findOneBy({
+      email: googleUser.email,
+    });
+
+    // Si el usuario no existe, crearlo con nuevo projectId
+    if (!user) {
+      const projectId = uuidv4(); // Generar nuevo projectId
+
+      const newUser = this.authRepository.create({
+        email: googleUser.email,
+        fullName: googleUser.fullName,
+        password: bcrypt.hashSync(Math.random().toString(36), 10), // Password aleatorio
+        role: UserRole.OWNER,
+        projectId,
+        isVerify: true, // Usuarios de Google están verificados automáticamente
+        profileImage: googleUser.picture,
+      });
+
+      user = await this.authRepository.save(newUser);
+    } else {
+      // Si el usuario existe, actualizar isVerify a true si no lo estaba
+      if (!user.isVerify) {
+        await this.authRepository.update(user.id, { isVerify: true });
+        user.isVerify = true;
+      }
+    }
+
+    const token = this.getJwtToken({
+      id: user.id,
+      role: user.role,
+      projectId: user.projectId,
+      email: user.email,
+    });
+
+    return {
+      token,
+      user: this.sanitizeUser(user),
+      projectId: user.projectId,
     };
   }
 
   async update(id: string, updateUserDto: UpdateUserDto) {
-    let errors: string[] = [];
-    const { password, ...user } = updateUserDto;
+    const { password, projectId, ...user } = updateUserDto;
+    const errors: string[] = [];
 
-    if ('projectId' in user) {
-      delete user.projectId;
-    }
-
-    const existingUser = await this.authRepository.findOneBy({
-      id,
-      projectId: user.projectId,
-    });
+    const existingUser = await this.authRepository.findOneBy({ id });
 
     if (!existingUser) {
       return { success: false, errors: ['Usuario no encontrado.'] };
     }
 
+    // Evitar duplicado de email
     if (user.email && user.email !== existingUser.email) {
       await this.validateUserExistence(
         user.email,
         existingUser.projectId,
-        errors,
       );
     }
 
-    let updatedData: UpdateUserDto = { ...user };
-
+    // Hashear password si viene
+    const updatedData: UpdateUserDto = { ...user };
     if (password) {
-      const hashedPassword = await bcrypt.hash(password, 10);
-      updatedData.password = hashedPassword;
+      updatedData.password = await bcrypt.hash(password, 10);
     }
 
     await this.authRepository.update(id, updatedData);
@@ -133,7 +193,6 @@ export class AuthService {
         address: true,
         salary: true,
         hireDate: true,
-        isActive: true,
         projectId: true,
         createdAt: true,
       },
@@ -149,18 +208,170 @@ export class AuthService {
     return employees;
   }
 
+  async updateEmployee(
+    employeeId: string,
+    ownerProjectId: string,
+    updateUserDto: UpdateUserDto,
+  ) {
+    const { password, ...updateData } = updateUserDto;
+    const errors: string[] = [];
+
+    // Buscar el empleado
+    const employee = await this.authRepository.findOneBy({ id: employeeId });
+
+    if (!employee) {
+      throw new NotFoundException('Empleado no encontrado');
+    }
+
+    // Validar que el empleado pertenezca al proyecto del owner
+    if (employee.projectId !== ownerProjectId) {
+      throw new UnauthorizedException(
+        'No tenés permisos para actualizar este empleado',
+      );
+    }
+
+    // Validar que no sea un OWNER (los OWNERs no pueden ser actualizados como empleados)
+    if (employee.role === UserRole.OWNER) {
+      throw new UnauthorizedException(
+        'No podés actualizar un usuario con rol OWNER',
+      );
+    }
+
+    // Evitar duplicado de email si se está cambiando
+    if (updateData.email && updateData.email !== employee.email) {
+      await this.validateUserExistence(
+        updateData.email,
+        ownerProjectId,
+      );
+    }
+
+    // Preparar datos a actualizar
+    const dataToUpdate: Partial<User> = { ...updateData };
+
+    // Hashear password si viene
+    if (password) {
+      dataToUpdate.password = await bcrypt.hash(password, 10);
+    }
+
+    // Actualizar empleado
+    await this.authRepository.update(employeeId, dataToUpdate);
+
+    return {
+      success: true,
+      message: 'Empleado actualizado correctamente',
+    };
+  }
+
+  async updateOwnProfile(userId: string, updateProfileDto: UpdateProfileDto) {
+    const { password, ...updateData } = updateProfileDto;
+    const errors: string[] = [];
+
+    // Buscar el usuario
+    const user = await this.authRepository.findOneBy({ id: userId });
+
+    if (!user) {
+      throw new NotFoundException('Usuario no encontrado');
+    }
+
+    // Evitar duplicado de email si se está cambiando
+    if (updateData.email && updateData.email !== user.email) {
+      await this.validateUserExistence(
+        updateData.email,
+        user.projectId,
+      );
+    }
+
+    // Preparar datos a actualizar
+    const dataToUpdate: Partial<User> = { ...updateData };
+
+    // Hashear password si viene
+    if (password) {
+      dataToUpdate.password = await bcrypt.hash(password, 10);
+    }
+
+    // Actualizar usuario
+    await this.authRepository.update(userId, dataToUpdate);
+
+    return {
+      success: true,
+      message: 'Perfil actualizado correctamente',
+    };
+  }
+
+  async verifyCode(code: string) {
+    // Buscar el código de verificación
+    const verificationCode = await this.verificationCodeRepository.findOne({
+      where: {
+        code,
+        isUsed: false,
+      },
+    });
+
+    if (!verificationCode) {
+      throw new BadRequestException(
+        'Código de verificación inválido o expirado',
+      );
+    }
+
+    // Verificar si el código ha expirado
+    if (new Date() > verificationCode.expiresAt) {
+      throw new BadRequestException('El código de verificación ha expirado');
+    }
+
+    // Actualizar el usuario a verificado usando el userId del código
+    await this.authRepository.update(verificationCode.userId, { isVerify: true });
+
+    // Eliminar el código de verificación de la base de datos
+    await this.verificationCodeRepository.delete(verificationCode.id);
+
+    return {
+      success: true,
+      message: 'Cuenta verificada correctamente',
+    };
+  }
+
+  private generateVerificationCode(): string {
+    return Math.floor(100000 + Math.random() * 900000).toString();
+  }
+
+  private async createAndSendVerificationCode(
+    userId: string,
+    email: string,
+    fullName: string,
+    projectId: string,
+  ) {
+    const code = this.generateVerificationCode();
+
+    // Guardar el código en la base de datos
+    const verificationCode = this.verificationCodeRepository.create({
+      userId,
+      code,
+      expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000), // 24 horas
+    });
+
+    await this.verificationCodeRepository.save(verificationCode);
+
+    // Enviar el email con el código y el projectId
+    await this.mailService.sendVerificationEmail(email, code, fullName, projectId);
+  }
+
   private async validateUserExistence(
     email: string,
     projectId: string,
-    errors: string[],
   ): Promise<void> {
     const userExist = await this.authRepository.findOneBy({
       email,
       projectId,
     });
     if (userExist) {
-      errors.push(`El usuario con email: ${email} ya existe.`);
-      throw new ConflictException(errors);
+      throw new ConflictException(`El usuario con email: ${email} ya existe en este proyecto.`);
+    }
+  }
+
+  private async validateOwnerEmailUnique(email: string): Promise<void> {
+    const userExist = await this.authRepository.findOneBy({ email });
+    if (userExist) {
+      throw new ConflictException(`El email ${email} ya está registrado.`);
     }
   }
 

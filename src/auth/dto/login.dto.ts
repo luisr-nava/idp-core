@@ -4,8 +4,7 @@ export class LoginDto {
   @IsString()
   @IsEmail()
   email: string;
+
   @IsString()
   password: string;
-  @IsString()
-  projectId: string;
 }

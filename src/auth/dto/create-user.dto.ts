@@ -64,13 +64,11 @@ export class CreateUserDto {
 
   @IsString()
   @IsOptional()
-  emergebcyContact?: string;
+  emergencyContact?: string;
 
+  @IsOptional()
   @IsString()
-  @IsNotEmpty({
-    message: 'El id del proyecto es requerido',
-  })
-  projectId: string;
+  projectId?: string;
 
   @IsOptional()
   @IsBoolean()
