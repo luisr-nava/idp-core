@@ -18,6 +18,7 @@ import { LoginDto } from './dto/login.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
 import { UpdateProfileDto } from './dto/update-profile.dto';
 import { VerifyCodeDto } from './dto/verify-code.dto';
+import { ResendVerificationCodeDto } from './dto/resend-verification-code.dto';
 import { User, UserRole } from './entities/user.entity';
 import { JwtAuthGuard } from './guards/jwt-auth.guard';
 import { GoogleAuthGuard } from './guards/google-auth.guard';
@@ -77,6 +78,12 @@ export class AuthController {
   @HttpCode(HttpStatus.OK)
   verifyCode(@Body() verifyCodeDto: VerifyCodeDto) {
     return this.authService.verifyCode(verifyCodeDto.code);
+  }
+
+  @Post('resend-verification-code')
+  @HttpCode(HttpStatus.OK)
+  resendVerificationCode(@Body() resendDto: ResendVerificationCodeDto) {
+    return this.authService.resendVerificationCode(resendDto.email);
   }
 
   @Patch(':id')

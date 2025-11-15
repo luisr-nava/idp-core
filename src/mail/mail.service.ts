@@ -44,66 +44,116 @@ export class MailService {
     // TODO: Llamar al servicio externo para obtener la plantilla
     // Por ahora, retorno una plantilla básica
     return `
-      <!DOCTYPE html>
+     <!DOCTYPE html>
       <html>
         <head>
+          <meta charset="UTF-8" />
+          <meta name="viewport" content="width=device-width, initial-scale=1" />
+          <title>Email Verification</title>
           <style>
             body {
-              font-family: Arial, sans-serif;
-              background-color: #f4f4f4;
-              padding: 20px;
               margin: 0;
+              padding: 0;
+              background-color: #f4f4f4;
+              font-family: Arial, sans-serif;
             }
+
             .container {
+              width: 100%;
               max-width: 600px;
               margin: 0 auto;
-              background-color: white;
-              padding: 30px;
-              border-radius: 10px;
-              box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+              background: #ffffff;
+              padding: 24px;
+              border-radius: 12px;
+              border-top: 6px solid #b317cf;
             }
-            .code {
-              font-size: 32px;
-              font-weight: bold;
-              color: #4CAF50;
-              text-align: center;
-              padding: 20px;
-              background-color: #f0f0f0;
-              border-radius: 5px;
-              letter-spacing: 5px;
-              margin: 20px 0;
-            }
-            .title {
-              color: #333;
+
+            h1 {
+              color: #b317cf;
               text-align: center;
               margin-bottom: 20px;
+              font-size: 22px;
             }
+
             .content {
-              color: #666;
+              color: #444444;
+              font-size: 15px;
               line-height: 1.6;
             }
-            .footer {
-              margin-top: 30px;
-              padding-top: 20px;
-              border-top: 1px solid #eee;
+
+            .code {
+              font-size: 34px;
+              font-weight: bold;
+              color: #ffffff;
+              background-color: #b317cf;
+              padding: 16px 0;
               text-align: center;
-              color: #999;
+              border-radius: 8px;
+              letter-spacing: 8px;
+              margin: 24px 0;
+            }
+
+            /* BOTÓN */
+            .button {
+              display: block;
+              width: 100%;
+              max-width: 260px;
+              margin: 0 auto;
+              background-color: #b317cf;
+              color: #ffffff !important;
+              text-decoration: none;
+              text-align: center;
+              padding: 14px 0;
+              border-radius: 8px;
+              font-size: 16px;
+              font-weight: bold;
+            }
+
+            .footer {
+              text-align: center;
               font-size: 12px;
+              color: #999;
+              margin-top: 32px;
+              border-top: 1px solid #eee;
+              padding-top: 18px;
+            }
+
+            @media (min-width: 600px) {
+              h1 { font-size: 26px; }
+              .code { font-size: 40px; }
             }
           </style>
         </head>
+
         <body>
-          <div class="container">
-            <h1 class="title">¡Bienvenido a ${projectId}, ${fullName}!</h1>
-            <div class="content">
-              <p>Gracias por registrarte. Para verificar tu cuenta, por favor usa el siguiente código:</p>
-              <div class="code">${code}</div>
-              <p>Este código expirará en 24 horas.</p>
-              <p>Si no solicitaste esta verificación, por favor ignora este email.</p>
-            </div>
-            <div class="footer">
-              <p>© 2025 ${projectId} - Identity Provider</p>
-              <p>Desarrollado por Luis Navarro</p>
+          <div style="padding: 16px;">
+            <div class="container">
+              <h1>¡Bienvenido a ${projectId}, ${fullName}!</h1>
+
+              <div class="content">
+                <p>Gracias por registrarte. Para activar tu cuenta, ingresá el siguiente código:</p>
+
+                <div class="code">${code}</div>
+
+                <p>O podés hacer clic en el siguiente botón para ir directamente a la página de verificación:</p>
+
+                <!-- 🔥 BOTÓN CON REDIRECCIÓN -->
+                <a
+                  href=""
+                  class="button"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >
+                  Verificar mi cuenta
+                </a>
+
+              </div>
+              
+              <div class="footer">
+                  <p style="margin-top:18px;">Este código es válido durante 24 horas.</p>
+                © 2025 ${projectId} — Identity Provider<br />
+                Desarrollado por Luis Navarro
+              </div>
             </div>
           </div>
         </body>

@@ -83,6 +83,11 @@ export class AuthService {
       throw new UnauthorizedException('La contraseña es incorrecta');
     }
 
+    // Verificar si el usuario ha verificado su cuenta
+    if (!user.isVerify) {
+      throw new UnauthorizedException('Debes verificar tu cuenta antes de iniciar sesión. Revisa tu email para obtener el código de verificación');
+    }
+
     const token = this.getJwtToken({
       id: user.id,
       role: user.role,
@@ -334,15 +339,45 @@ export class AuthService {
     return Math.floor(100000 + Math.random() * 900000).toString();
   }
 
+  async resendVerificationCode(email: string) {
+    // Buscar el usuario por email
+    const user = await this.authRepository.findOneBy({ email });
+
+    if (!user) {
+      throw new NotFoundException(`El usuario con el email ${email} no existe`);
+    }
+
+    // Verificar si el usuario ya está verificado
+    if (user.isVerify) {
+      throw new BadRequestException('Tu cuenta ya está verificada');
+    }
+
+    // Reenviar el código de verificación (elimina el antiguo y crea uno nuevo)
+    await this.createAndSendVerificationCode(
+      user.id,
+      user.email,
+      user.fullName,
+      user.projectId,
+    );
+
+    return {
+      success: true,
+      message: 'Se ha enviado un nuevo código de verificación a tu email',
+    };
+  }
+
   private async createAndSendVerificationCode(
     userId: string,
     email: string,
     fullName: string,
     projectId: string,
   ) {
+    // Eliminar códigos antiguos del usuario antes de crear uno nuevo
+    await this.verificationCodeRepository.delete({ userId });
+
     const code = this.generateVerificationCode();
 
-    // Guardar el código en la base de datos
+    // Guardar el nuevo código en la base de datos
     const verificationCode = this.verificationCodeRepository.create({
       userId,
       code,
