@@ -5,6 +5,7 @@ import { ConfigModule, ConfigService } from '@nestjs/config';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { User } from './entities/user.entity';
 import { VerificationCode } from './entities/verification-code.entity';
+import { PasswordReset } from './entities/password-reset.entity';
 import { JwtModule } from '@nestjs/jwt';
 import { PassportModule } from '@nestjs/passport';
 import { JwtStrategy } from './strategies/jwt.strategies';
@@ -17,7 +18,7 @@ import { MailModule } from '@/mail/mail.module';
   imports: [
     ConfigModule,
     MailModule,
-    TypeOrmModule.forFeature([User, VerificationCode]),
+    TypeOrmModule.forFeature([User, VerificationCode, PasswordReset]),
     PassportModule.register({
       defaultStrategy: 'jwt',
     }),

@@ -11,6 +11,7 @@ interface EnvVars {
   GOOGLE_CLIENT_ID: string;
   GOOGLE_CLIENT_SECRET: string;
   GOOGLE_REDIRECT_URI: string;
+  FRONTEND_URL?: string;
 }
 
 const log = new Logger('EnvVars - ');
@@ -25,6 +26,7 @@ const envVarsSchema = joi
     GOOGLE_CLIENT_ID: joi.string().required(),
     GOOGLE_CLIENT_SECRET: joi.string().required(),
     GOOGLE_REDIRECT_URI: joi.string().required(),
+    FRONTEND_URL: joi.string().optional(),
   })
   .unknown(true);
 
@@ -46,4 +48,5 @@ export const envs = {
   googleClientId: envVars.GOOGLE_CLIENT_ID,
   googleClientSecret: envVars.GOOGLE_CLIENT_SECRET,
   googleRedirectUri: envVars.GOOGLE_REDIRECT_URI,
+  frontendUrl: envVars.FRONTEND_URL,
 };

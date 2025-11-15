@@ -8,6 +8,7 @@ import {
 import { InjectRepository } from '@nestjs/typeorm';
 import { User, UserRole } from './entities/user.entity';
 import { VerificationCode } from './entities/verification-code.entity';
+import { PasswordReset } from './entities/password-reset.entity';
 import { In, Repository } from 'typeorm';
 import { CreateUserDto } from './dto/create-user.dto';
 import * as bcrypt from 'bcrypt';
@@ -18,6 +19,7 @@ import { UpdateProfileDto } from './dto/update-profile.dto';
 import { MailService } from '@/mail/mail.service';
 import { envs } from '@/config';
 import { v4 as uuidv4 } from 'uuid';
+import * as crypto from 'crypto';
 
 @Injectable()
 export class AuthService {
@@ -26,6 +28,8 @@ export class AuthService {
     private readonly authRepository: Repository<User>,
     @InjectRepository(VerificationCode)
     private readonly verificationCodeRepository: Repository<VerificationCode>,
+    @InjectRepository(PasswordReset)
+    private readonly passwordResetRepository: Repository<PasswordReset>,
     private readonly jwtService: JwtService,
     private readonly mailService: MailService,
   ) {}
@@ -363,6 +367,103 @@ export class AuthService {
     return {
       success: true,
       message: 'Se ha enviado un nuevo código de verificación a tu email',
+    };
+  }
+
+  async forgotPassword(email: string) {
+    // Buscar el usuario por email
+    const user = await this.authRepository.findOneBy({ email });
+
+    if (!user) {
+      // Por seguridad, no revelamos si el email existe o no
+      return {
+        success: true,
+        message:
+          'Si el email existe en nuestro sistema, recibirás un enlace para restablecer tu contraseña',
+      };
+    }
+
+    // Verificar que el usuario esté verificado
+    if (!user.isVerify) {
+      throw new BadRequestException(
+        'Debes verificar tu cuenta antes de poder restablecer la contraseña',
+      );
+    }
+
+    // Generar token único y seguro
+    const resetToken = crypto.randomBytes(32).toString('hex');
+
+    // Eliminar tokens antiguos del usuario
+    await this.passwordResetRepository.delete({ userId: user.id });
+
+    // Crear nuevo token de reset
+    const passwordReset = this.passwordResetRepository.create({
+      userId: user.id,
+      token: resetToken,
+      expiresAt: new Date(Date.now() + 60 * 60 * 1000), // 1 hora
+    });
+
+    await this.passwordResetRepository.save(passwordReset);
+
+    // Construir el link de reset (esto debería venir de la configuración del frontend)
+    const resetLink = `${envs.frontendUrl || 'http://localhost:3000'}/reset-password?token=${resetToken}`;
+
+    // Enviar email con el link de reset
+    await this.mailService.sendPasswordResetEmail(
+      user.email,
+      resetLink,
+      user.fullName,
+      user.projectId,
+    );
+
+    return {
+      success: true,
+      message:
+        'Si el email existe en nuestro sistema, recibirás un enlace para restablecer tu contraseña',
+    };
+  }
+
+  async resetPassword(token: string, newPassword: string) {
+    // Buscar el token de reset
+    const passwordReset = await this.passwordResetRepository.findOne({
+      where: {
+        token,
+        isUsed: false,
+      },
+    });
+
+    if (!passwordReset) {
+      throw new BadRequestException(
+        'Token de recuperación inválido o expirado',
+      );
+    }
+
+    // Verificar si el token ha expirado
+    if (new Date() > passwordReset.expiresAt) {
+      throw new BadRequestException('El token de recuperación ha expirado');
+    }
+
+    // Buscar el usuario
+    const user = await this.authRepository.findOneBy({
+      id: passwordReset.userId,
+    });
+
+    if (!user) {
+      throw new NotFoundException('Usuario no encontrado');
+    }
+
+    // Actualizar la contraseña del usuario
+    const hashedPassword = await bcrypt.hash(newPassword, 10);
+    await this.authRepository.update(user.id, { password: hashedPassword });
+
+    // Marcar el token como usado
+    await this.passwordResetRepository.update(passwordReset.id, {
+      isUsed: true,
+    });
+
+    return {
+      success: true,
+      message: 'Contraseña actualizada correctamente',
     };
   }
 
