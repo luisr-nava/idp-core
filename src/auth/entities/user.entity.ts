@@ -2,6 +2,7 @@ import {
   Column,
   CreateDateColumn,
   Entity,
+  Index,
   PrimaryGeneratedColumn,
   UpdateDateColumn,
 } from 'typeorm';
@@ -19,7 +20,8 @@ export class User {
   @Column()
   fullName: string;
 
-  @Column()
+  @Column({ unique: true })
+  @Index('idx_user_email', { unique: true })
   email: string;
 
   @Column()
@@ -58,6 +60,25 @@ export class User {
 
   @Column({ nullable: true })
   emergencyContact?: string;
+
+  @Column({ type: 'timestamp', nullable: true })
+  lastLogin?: Date;
+
+  @Column({ type: 'int', default: 0 })
+  failedLoginAttempts: number;
+
+  @Column({ type: 'timestamp', nullable: true })
+  lockUntil?: Date;
+
+  // Campos para 2FA
+  @Column({ default: false })
+  twoFactorEnabled: boolean;
+
+  @Column({ type: 'varchar', nullable: true })
+  twoFactorSecret?: string;
+
+  @Column({ type: 'simple-json', nullable: true })
+  twoFactorRecoveryCodes?: string[];
 
   @CreateDateColumn()
   createdAt: Date;

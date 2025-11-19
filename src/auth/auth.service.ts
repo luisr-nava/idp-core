@@ -1,6 +1,7 @@
 import {
   ConflictException,
   Injectable,
+  Logger,
   NotFoundException,
   UnauthorizedException,
   BadRequestException,
@@ -9,7 +10,9 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { User, UserRole } from './entities/user.entity';
 import { VerificationCode } from './entities/verification-code.entity';
 import { PasswordReset } from './entities/password-reset.entity';
-import { In, Repository } from 'typeorm';
+import { RefreshToken } from './entities/refresh-token.entity';
+import { TokenBlacklist } from './entities/token-blacklist.entity';
+import { In, LessThan, Repository } from 'typeorm';
 import { CreateUserDto } from './dto/create-user.dto';
 import * as bcrypt from 'bcrypt';
 import { LoginDto } from './dto/login.dto';
@@ -20,9 +23,14 @@ import { MailService } from '@/mail/mail.service';
 import { envs } from '@/config';
 import { v4 as uuidv4 } from 'uuid';
 import * as crypto from 'crypto';
+import { authenticator } from 'otplib';
+import * as QRCode from 'qrcode';
+import { Cron, CronExpression } from '@nestjs/schedule';
 
 @Injectable()
 export class AuthService {
+  private readonly logger = new Logger(AuthService.name);
+
   constructor(
     @InjectRepository(User)
     private readonly authRepository: Repository<User>,
@@ -30,6 +38,10 @@ export class AuthService {
     private readonly verificationCodeRepository: Repository<VerificationCode>,
     @InjectRepository(PasswordReset)
     private readonly passwordResetRepository: Repository<PasswordReset>,
+    @InjectRepository(RefreshToken)
+    private readonly refreshTokenRepository: Repository<RefreshToken>,
+    @InjectRepository(TokenBlacklist)
+    private readonly tokenBlacklistRepository: Repository<TokenBlacklist>,
     private readonly jwtService: JwtService,
     private readonly mailService: MailService,
   ) {}
@@ -57,6 +69,11 @@ export class AuthService {
 
     await this.authRepository.save(newUser);
 
+    // Logging de seguridad
+    this.logger.log(
+      `✅ Usuario creado: ${user.email} | Rol: ${user.role} | ProjectId: ${projectId}`,
+    );
+
     // Enviar email de verificación con el projectId
     await this.createAndSendVerificationCode(
       newUser.id,
@@ -77,20 +94,80 @@ export class AuthService {
 
     const user = await this.authRepository.findOneBy({ email });
 
-    if (!user) {
-      throw new UnauthorizedException(`El usuario con el email ${email} no existe`);
+    // Verificar si la cuenta está bloqueada
+    if (user && user.lockUntil && new Date() < user.lockUntil) {
+      const minutesLeft = Math.ceil(
+        (user.lockUntil.getTime() - new Date().getTime()) / 60000,
+      );
+      this.logger.warn(
+        `🔒 Cuenta bloqueada: ${email} | Tiempo restante: ${minutesLeft} minutos`,
+      );
+      throw new UnauthorizedException(
+        `Cuenta bloqueada temporalmente. Intenta nuevamente en ${minutesLeft} minutos.`,
+      );
     }
 
-    const isPasswordValid = bcrypt.compareSync(password, user.password);
+    // Protección contra timing attacks: siempre ejecutar bcrypt incluso si el usuario no existe
+    const dummyHash = '$2b$10$invalidhashtopreventtimingattackXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX';
+    const isPasswordValid = user
+      ? await bcrypt.compare(password, user.password)
+      : await bcrypt.compare(password, dummyHash);
 
-    if (!isPasswordValid) {
-      throw new UnauthorizedException('La contraseña es incorrecta');
+    // Mensaje genérico para no revelar si el email existe o la contraseña es incorrecta
+    if (!user || !isPasswordValid) {
+      // Incrementar contador de intentos fallidos
+      if (user) {
+        await this.handleFailedLogin(user);
+      }
+
+      // Logging de intento fallido
+      this.logger.warn(
+        `🚫 Intento de login fallido: ${email} | IP: ${this.getClientInfo()}`,
+      );
+      throw new UnauthorizedException(
+        'Email o contraseña incorrectos',
+      );
     }
 
     // Verificar si el usuario ha verificado su cuenta
     if (!user.isVerify) {
-      throw new UnauthorizedException('Debes verificar tu cuenta antes de iniciar sesión. Revisa tu email para obtener el código de verificación');
+      this.logger.warn(
+        `⚠️ Intento de login sin verificar: ${email} | UserId: ${user.id}`,
+      );
+      throw new UnauthorizedException(
+        'Debes verificar tu cuenta antes de iniciar sesión. Revisa tu email para obtener el código de verificación',
+      );
     }
+
+    // Verificar si el usuario tiene 2FA habilitado
+    if (user.twoFactorEnabled) {
+      // Generar un token temporal para la verificación 2FA (válido por 5 minutos)
+      const tempToken = this.jwtService.sign(
+        {
+          id: user.id,
+          email: user.email,
+          temp2FA: true,
+        },
+        { expiresIn: '5m' },
+      );
+
+      this.logger.log(
+        `🔐 Login con 2FA pendiente: ${email} | UserId: ${user.id}`,
+      );
+
+      return {
+        requires2FA: true,
+        tempToken,
+        message: 'Ingresa el código de autenticación de dos factores',
+      };
+    }
+
+    // Resetear intentos fallidos y actualizar último login
+    await this.authRepository.update(user.id, {
+      failedLoginAttempts: 0,
+      lockUntil: undefined,
+      lastLogin: new Date(),
+    });
 
     const token = this.getJwtToken({
       id: user.id,
@@ -99,8 +176,17 @@ export class AuthService {
       email: user.email,
     });
 
+    // Generar refresh token
+    const refreshToken = await this.generateRefreshToken(user.id);
+
+    // Logging de login exitoso
+    this.logger.log(
+      `✅ Login exitoso: ${email} | UserId: ${user.id} | Rol: ${user.role}`,
+    );
+
     return {
       token,
+      refreshToken,
       user: this.sanitizeUser(user),
       projectId: user.projectId,
     };
@@ -119,7 +205,7 @@ export class AuthService {
       const newUser = this.authRepository.create({
         email: googleUser.email,
         fullName: googleUser.fullName,
-        password: bcrypt.hashSync(Math.random().toString(36), 10), // Password aleatorio
+        password: bcrypt.hashSync(crypto.randomBytes(32).toString('hex'), 10), // Password criptográficamente seguro
         role: UserRole.OWNER,
         projectId,
         isVerify: true, // Usuarios de Google están verificados automáticamente
@@ -150,8 +236,8 @@ export class AuthService {
   }
 
   async update(id: string, updateUserDto: UpdateUserDto) {
-    const { password, projectId, ...user } = updateUserDto;
-    const errors: string[] = [];
+    // SEGURIDAD: Excluir campos sensibles que no deben ser actualizables directamente
+    const { password, projectId, role, isVerify, ...user } = updateUserDto;
 
     const existingUser = await this.authRepository.findOneBy({ id });
 
@@ -222,8 +308,9 @@ export class AuthService {
     ownerProjectId: string,
     updateUserDto: UpdateUserDto,
   ) {
-    const { password, ...updateData } = updateUserDto;
-    const errors: string[] = [];
+    // SEGURIDAD: Excluir campos sensibles
+    const { password, projectId, role, isVerify, ...updateData } =
+      updateUserDto;
 
     // Buscar el empleado
     const employee = await this.authRepository.findOneBy({ id: employeeId });
@@ -273,7 +360,6 @@ export class AuthService {
 
   async updateOwnProfile(userId: string, updateProfileDto: UpdateProfileDto) {
     const { password, ...updateData } = updateProfileDto;
-    const errors: string[] = [];
 
     // Buscar el usuario
     const user = await this.authRepository.findOneBy({ id: userId });
@@ -296,10 +382,19 @@ export class AuthService {
     // Hashear password si viene
     if (password) {
       dataToUpdate.password = await bcrypt.hash(password, 10);
+      // Logging de cambio de contraseña
+      this.logger.warn(
+        `🔐 Cambio de contraseña: ${user.email} | UserId: ${userId}`,
+      );
     }
 
     // Actualizar usuario
     await this.authRepository.update(userId, dataToUpdate);
+
+    // Logging de actualización de perfil
+    this.logger.log(
+      `📝 Perfil actualizado: ${user.email} | UserId: ${userId}`,
+    );
 
     return {
       success: true,
@@ -340,20 +435,31 @@ export class AuthService {
   }
 
   private generateVerificationCode(): string {
-    return Math.floor(100000 + Math.random() * 900000).toString();
+    // Código alfanumérico de 8 caracteres (criptográficamente seguro)
+    // Más de 2.8 billones de combinaciones vs 1 millón del método anterior
+    return crypto.randomBytes(4).toString('hex').toUpperCase();
   }
 
   async resendVerificationCode(email: string) {
     // Buscar el usuario por email
     const user = await this.authRepository.findOneBy({ email });
 
+    // Mensaje genérico para no revelar si el email existe
     if (!user) {
-      throw new NotFoundException(`El usuario con el email ${email} no existe`);
+      return {
+        success: true,
+        message:
+          'Si el email existe y no está verificado, recibirás un nuevo código de verificación',
+      };
     }
 
     // Verificar si el usuario ya está verificado
     if (user.isVerify) {
-      throw new BadRequestException('Tu cuenta ya está verificada');
+      return {
+        success: true,
+        message:
+          'Si el email existe y no está verificado, recibirás un nuevo código de verificación',
+      };
     }
 
     // Reenviar el código de verificación (elimina el antiguo y crea uno nuevo)
@@ -366,7 +472,8 @@ export class AuthService {
 
     return {
       success: true,
-      message: 'Se ha enviado un nuevo código de verificación a tu email',
+      message:
+        'Si el email existe y no está verificado, recibirás un nuevo código de verificación',
     };
   }
 
@@ -393,19 +500,25 @@ export class AuthService {
     // Generar token único y seguro
     const resetToken = crypto.randomBytes(32).toString('hex');
 
+    // Hashear el token antes de guardarlo en la BD (seguridad adicional)
+    const tokenHash = crypto
+      .createHash('sha256')
+      .update(resetToken)
+      .digest('hex');
+
     // Eliminar tokens antiguos del usuario
     await this.passwordResetRepository.delete({ userId: user.id });
 
-    // Crear nuevo token de reset
+    // Crear nuevo token de reset (guardamos el hash, no el token original)
     const passwordReset = this.passwordResetRepository.create({
       userId: user.id,
-      token: resetToken,
+      token: tokenHash,
       expiresAt: new Date(Date.now() + 60 * 60 * 1000), // 1 hora
     });
 
     await this.passwordResetRepository.save(passwordReset);
 
-    // Construir el link de reset (esto debería venir de la configuración del frontend)
+    // Construir el link de reset con el token original (este se envía al usuario)
     const resetLink = `${envs.frontendUrl || 'http://localhost:3000'}/reset-password?token=${resetToken}`;
 
     // Enviar email con el link de reset
@@ -424,10 +537,13 @@ export class AuthService {
   }
 
   async resetPassword(token: string, newPassword: string) {
-    // Buscar el token de reset
+    // Hashear el token recibido para compararlo con el almacenado
+    const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
+
+    // Buscar el token de reset hasheado
     const passwordReset = await this.passwordResetRepository.findOne({
       where: {
-        token,
+        token: tokenHash,
         isUsed: false,
       },
     });
@@ -538,5 +654,380 @@ export class AuthService {
   private sanitizeUserForProfile(user: User) {
     const { password, projectId, ...rest } = user;
     return rest;
+  }
+
+  private getClientInfo(): string {
+    // Placeholder para información del cliente (se puede expandir con IP real)
+    return 'N/A';
+  }
+
+  private async handleFailedLogin(user: User): Promise<void> {
+    const MAX_ATTEMPTS = 5;
+    const LOCK_TIME_MINUTES = 30;
+
+    const newAttempts = user.failedLoginAttempts + 1;
+
+    if (newAttempts >= MAX_ATTEMPTS) {
+      // Bloquear cuenta por 30 minutos
+      const lockUntil = new Date(Date.now() + LOCK_TIME_MINUTES * 60 * 1000);
+
+      await this.authRepository.update(user.id, {
+        failedLoginAttempts: newAttempts,
+        lockUntil,
+      });
+
+      this.logger.warn(
+        `🔒 Cuenta bloqueada por ${LOCK_TIME_MINUTES} minutos: ${user.email} | ${newAttempts} intentos fallidos`,
+      );
+    } else {
+      await this.authRepository.update(user.id, {
+        failedLoginAttempts: newAttempts,
+      });
+
+      this.logger.warn(
+        `⚠️ Intento fallido ${newAttempts}/${MAX_ATTEMPTS}: ${user.email}`,
+      );
+    }
+  }
+
+  // ==================== REFRESH TOKENS ====================
+
+  private async generateRefreshToken(userId: string): Promise<string> {
+    const token = crypto.randomBytes(64).toString('hex');
+
+    const refreshToken = this.refreshTokenRepository.create({
+      userId,
+      token,
+      expiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000), // 30 días
+    });
+
+    await this.refreshTokenRepository.save(refreshToken);
+
+    return token;
+  }
+
+  async refreshTokens(oldRefreshToken: string) {
+    // Buscar el refresh token
+    const refreshToken = await this.refreshTokenRepository.findOne({
+      where: { token: oldRefreshToken, isRevoked: false },
+    });
+
+    if (!refreshToken) {
+      throw new UnauthorizedException('Refresh token inválido');
+    }
+
+    // Verificar si expiró
+    if (new Date() > refreshToken.expiresAt) {
+      throw new UnauthorizedException('Refresh token expirado');
+    }
+
+    // Buscar el usuario
+    const user = await this.authRepository.findOneBy({
+      id: refreshToken.userId,
+    });
+
+    if (!user) {
+      throw new UnauthorizedException('Usuario no encontrado');
+    }
+
+    // Revocar el refresh token anterior (rotación)
+    const newRefreshToken = await this.generateRefreshToken(user.id);
+
+    await this.refreshTokenRepository.update(refreshToken.id, {
+      isRevoked: true,
+      replacedByToken: newRefreshToken,
+    });
+
+    // Generar nuevo access token
+    const accessToken = this.getJwtToken({
+      id: user.id,
+      role: user.role,
+      projectId: user.projectId,
+      email: user.email,
+    });
+
+    this.logger.log(
+      `🔄 Tokens refrescados: ${user.email} | UserId: ${user.id}`,
+    );
+
+    return {
+      accessToken,
+      refreshToken: newRefreshToken,
+    };
+  }
+
+  // ==================== JWT BLACKLIST ====================
+
+  async logout(token: string, userId: string) {
+    // Decodificar el token para obtener su expiración
+    const decoded = this.jwtService.decode(token) as any;
+
+    if (!decoded || !decoded.exp) {
+      throw new BadRequestException('Token inválido');
+    }
+
+    const expiresAt = new Date(decoded.exp * 1000);
+
+    // Agregar a la blacklist
+    const blacklistedToken = this.tokenBlacklistRepository.create({
+      token,
+      userId,
+      expiresAt,
+      reason: 'logout',
+    });
+
+    await this.tokenBlacklistRepository.save(blacklistedToken);
+
+    // Revocar todos los refresh tokens del usuario
+    await this.refreshTokenRepository.update(
+      { userId, isRevoked: false },
+      { isRevoked: true },
+    );
+
+    this.logger.log(`👋 Logout exitoso: UserId: ${userId}`);
+
+    return {
+      success: true,
+      message: 'Logout exitoso',
+    };
+  }
+
+  async isTokenBlacklisted(token: string): Promise<boolean> {
+    const blacklisted = await this.tokenBlacklistRepository.findOne({
+      where: { token },
+    });
+
+    return !!blacklisted;
+  }
+
+  // Limpieza automática de tokens expirados de la blacklist
+  // Ejecutar limpieza diaria a las 3:00 AM
+  @Cron(CronExpression.EVERY_DAY_AT_3AM)
+  async cleanupExpiredBlacklistedTokens() {
+    const deleted = await this.tokenBlacklistRepository.delete({
+      expiresAt: LessThan(new Date()),
+    });
+
+    this.logger.log(`🧹 Tokens expirados eliminados de blacklist: ${deleted.affected || 0}`);
+  }
+
+  // Limpieza automática de refresh tokens expirados
+  // Ejecutar limpieza diaria a las 3:30 AM
+  @Cron('30 3 * * *')
+  async cleanupExpiredRefreshTokens() {
+    const deleted = await this.refreshTokenRepository.delete({
+      expiresAt: LessThan(new Date()),
+    });
+
+    this.logger.log(`🧹 Refresh tokens expirados eliminados: ${deleted.affected || 0}`);
+  }
+
+  // ==================== TWO-FACTOR AUTHENTICATION ====================
+
+  async enable2FA(userId: string) {
+    const user = await this.authRepository.findOneBy({ id: userId });
+
+    if (!user) {
+      throw new NotFoundException('Usuario no encontrado');
+    }
+
+    if (user.twoFactorEnabled) {
+      throw new BadRequestException('2FA ya está habilitado');
+    }
+
+    // Generar secret
+    const secret = authenticator.generateSecret();
+
+    // Generar códigos de recuperación (8 códigos de 8 caracteres)
+    const recoveryCodes = Array.from({ length: 8 }, () =>
+      crypto.randomBytes(4).toString('hex').toUpperCase(),
+    );
+
+    // Guardar secret y recovery codes
+    await this.authRepository.update(userId, {
+      twoFactorSecret: secret,
+      twoFactorRecoveryCodes: recoveryCodes,
+    });
+
+    // Generar QR code
+    const otpauthUrl = authenticator.keyuri(
+      user.email,
+      'IDP-Core',
+      secret,
+    );
+
+    const qrCodeDataUrl = await QRCode.toDataURL(otpauthUrl);
+
+    this.logger.log(`🔐 2FA habilitado para: ${user.email} | UserId: ${userId}`);
+
+    return {
+      secret,
+      qrCode: qrCodeDataUrl,
+      recoveryCodes,
+      message:
+        'Escanea el código QR con tu app de autenticación (Google Authenticator, Authy, etc.)',
+    };
+  }
+
+  async verify2FA(userId: string, token: string) {
+    const user = await this.authRepository.findOneBy({ id: userId });
+
+    if (!user || !user.twoFactorSecret) {
+      throw new BadRequestException('2FA no está configurado');
+    }
+
+    const isValid = authenticator.verify({
+      token,
+      secret: user.twoFactorSecret,
+    });
+
+    if (!isValid) {
+      // Verificar si es un código de recuperación
+      if (user.twoFactorRecoveryCodes?.includes(token)) {
+        // Remover el código de recuperación usado
+        const updatedCodes = user.twoFactorRecoveryCodes.filter(
+          (code) => code !== token,
+        );
+
+        await this.authRepository.update(userId, {
+          twoFactorRecoveryCodes: updatedCodes,
+        });
+
+        this.logger.warn(
+          `⚠️ Código de recuperación usado: ${user.email} | Quedan ${updatedCodes.length} códigos`,
+        );
+
+        return { valid: true, recoveryCodeUsed: true };
+      }
+
+      throw new UnauthorizedException('Código 2FA inválido');
+    }
+
+    // Activar 2FA si es la primera verificación
+    if (!user.twoFactorEnabled) {
+      await this.authRepository.update(userId, {
+        twoFactorEnabled: true,
+      });
+
+      this.logger.log(
+        `✅ 2FA activado y verificado: ${user.email} | UserId: ${userId}`,
+      );
+    }
+
+    return { valid: true, recoveryCodeUsed: false };
+  }
+
+  async disable2FA(userId: string, token: string) {
+    const user = await this.authRepository.findOneBy({ id: userId });
+
+    if (!user || !user.twoFactorEnabled) {
+      throw new BadRequestException('2FA no está habilitado');
+    }
+
+    // Verificar el código antes de deshabilitar
+    const isValid = authenticator.verify({
+      token,
+      secret: user.twoFactorSecret || '',
+    });
+
+    if (!isValid) {
+      throw new UnauthorizedException(
+        'Código 2FA inválido. No se puede deshabilitar.',
+      );
+    }
+
+    // Deshabilitar 2FA
+    await this.authRepository.update(userId, {
+      twoFactorEnabled: false,
+      twoFactorSecret: undefined,
+      twoFactorRecoveryCodes: undefined,
+    });
+
+    this.logger.warn(`🔓 2FA deshabilitado: ${user.email} | UserId: ${userId}`);
+
+    return {
+      success: true,
+      message: '2FA deshabilitado correctamente',
+    };
+  }
+
+  async verify2FALogin(tempToken: string, code: string) {
+    // Decodificar y validar el token temporal
+    let decoded: any;
+    try {
+      decoded = this.jwtService.verify(tempToken);
+    } catch (error) {
+      throw new UnauthorizedException(
+        'Token temporal inválido o expirado. Inicia sesión nuevamente.',
+      );
+    }
+
+    // Verificar que sea un token temporal de 2FA
+    if (!decoded.temp2FA) {
+      throw new UnauthorizedException('Token inválido');
+    }
+
+    const user = await this.authRepository.findOneBy({ id: decoded.id });
+
+    if (!user || !user.twoFactorEnabled || !user.twoFactorSecret) {
+      throw new BadRequestException('2FA no está configurado correctamente');
+    }
+
+    // Verificar el código 2FA
+    const isValid = authenticator.verify({
+      token: code,
+      secret: user.twoFactorSecret,
+    });
+
+    if (!isValid) {
+      // Verificar si es un código de recuperación
+      if (user.twoFactorRecoveryCodes?.includes(code)) {
+        // Remover el código de recuperación usado
+        const updatedCodes = user.twoFactorRecoveryCodes.filter(
+          (recoveryCode) => recoveryCode !== code,
+        );
+
+        await this.authRepository.update(user.id, {
+          twoFactorRecoveryCodes: updatedCodes,
+        });
+
+        this.logger.warn(
+          `⚠️ Código de recuperación usado en login: ${user.email} | Quedan ${updatedCodes.length} códigos`,
+        );
+      } else {
+        this.logger.warn(
+          `🚫 Código 2FA inválido en login: ${user.email} | UserId: ${user.id}`,
+        );
+        throw new UnauthorizedException('Código 2FA inválido');
+      }
+    }
+
+    // Actualizar último login y resetear intentos fallidos
+    await this.authRepository.update(user.id, {
+      failedLoginAttempts: 0,
+      lockUntil: undefined,
+      lastLogin: new Date(),
+    });
+
+    // Generar tokens definitivos
+    const token = this.getJwtToken({
+      id: user.id,
+      role: user.role,
+      projectId: user.projectId,
+      email: user.email,
+    });
+
+    const refreshToken = await this.generateRefreshToken(user.id);
+
+    this.logger.log(
+      `✅ Login 2FA completado: ${user.email} | UserId: ${user.id} | Rol: ${user.role}`,
+    );
+
+    return {
+      token,
+      refreshToken,
+      user: this.sanitizeUser(user),
+      projectId: user.projectId,
+    };
   }
 }

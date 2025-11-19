@@ -17,16 +17,25 @@ interface EnvVars {
 const log = new Logger('EnvVars - ');
 const envVarsSchema = joi
   .object({
-    PORT: joi.number().required(),
-    DB_PORT: joi.number().required(),
-    DB_PASSWORD: joi.string().required(),
-    DB_NAME: joi.string().required(),
-    JWT_SECRET: joi.string().required(),
-    RESEND_API_KEY: joi.string().required(),
-    GOOGLE_CLIENT_ID: joi.string().required(),
-    GOOGLE_CLIENT_SECRET: joi.string().required(),
-    GOOGLE_REDIRECT_URI: joi.string().required(),
-    FRONTEND_URL: joi.string().optional(),
+    PORT: joi.number().port().required(),
+    DB_PORT: joi.number().port().required(),
+    DB_PASSWORD: joi.string().min(8).required(),
+    DB_NAME: joi.string().min(3).max(63).required(),
+    JWT_SECRET: joi
+      .string()
+      .min(32)
+      .required()
+      .messages({
+        'string.min':
+          'JWT_SECRET debe tener al menos 32 caracteres para ser seguro',
+      }),
+    RESEND_API_KEY: joi.string().pattern(/^re_/).required().messages({
+      'string.pattern.base': 'RESEND_API_KEY debe comenzar con "re_"',
+    }),
+    GOOGLE_CLIENT_ID: joi.string().min(20).required(),
+    GOOGLE_CLIENT_SECRET: joi.string().min(20).required(),
+    GOOGLE_REDIRECT_URI: joi.string().uri().required(),
+    FRONTEND_URL: joi.string().uri().optional(),
   })
   .unknown(true);
 

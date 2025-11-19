@@ -56,3 +56,12 @@ pids
 report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
 .dockerignore
 .claude
+nul
+
+FRONTEND_GUIDE.md
+
+MICROSERVICES_GUIDE.md
+
+NESTJS_INTEGRATION.md
+
+SECURITY.md

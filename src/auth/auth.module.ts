@@ -6,6 +6,8 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 import { User } from './entities/user.entity';
 import { VerificationCode } from './entities/verification-code.entity';
 import { PasswordReset } from './entities/password-reset.entity';
+import { RefreshToken } from './entities/refresh-token.entity';
+import { TokenBlacklist } from './entities/token-blacklist.entity';
 import { JwtModule } from '@nestjs/jwt';
 import { PassportModule } from '@nestjs/passport';
 import { JwtStrategy } from './strategies/jwt.strategies';
@@ -18,7 +20,13 @@ import { MailModule } from '@/mail/mail.module';
   imports: [
     ConfigModule,
     MailModule,
-    TypeOrmModule.forFeature([User, VerificationCode, PasswordReset]),
+    TypeOrmModule.forFeature([
+      User,
+      VerificationCode,
+      PasswordReset,
+      RefreshToken,
+      TokenBlacklist,
+    ]),
     PassportModule.register({
       defaultStrategy: 'jwt',
     }),
@@ -27,7 +35,7 @@ import { MailModule } from '@/mail/mail.module';
       inject: [ConfigService],
       useFactory: (configService: ConfigService) => ({
         secret: configService.get('JWT_SECRET'),
-        signOptions: { expiresIn: '1d' },
+        signOptions: { expiresIn: '15m' }, // Access token: 15 minutos
       }),
     }),
   ],

@@ -1,6 +1,6 @@
 import { Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { TypeOrmModule, TypeOrmModuleOptions } from '@nestjs/typeorm';
+import { TypeOrmModuleOptions } from '@nestjs/typeorm';
 import { join } from 'path';
 export const typeORMConfig = (
   configService: ConfigService,
@@ -12,6 +12,13 @@ export const typeORMConfig = (
   const host = isLocal ? 'localhost' : configService.get('DB_HOST') || 'db';
 
   logger.verbose(`🗄️ Conectando a Postgres en host: ${host}`);
+
+  // SEGURIDAD: synchronize solo en desarrollo, NUNCA en producción
+  if (process.env.NODE_ENV === 'production') {
+    logger.warn(
+      '⚠️  PRODUCCIÓN: synchronize deshabilitado. Usar migraciones para cambios de schema.',
+    );
+  }
 
   return {
     type: 'postgres', // 👈 ya no es string genérico

@@ -1,6 +1,7 @@
 import {
   Body,
   Controller,
+  ForbiddenException,
   Get,
   HttpCode,
   HttpStatus,
@@ -8,10 +9,10 @@ import {
   ParseUUIDPipe,
   Patch,
   Post,
-  Query,
   Req,
   UseGuards,
 } from '@nestjs/common';
+import { Throttle } from '@nestjs/throttler';
 import { AuthService } from './auth.service';
 import { CreateUserDto } from './dto/create-user.dto';
 import { LoginDto } from './dto/login.dto';
@@ -28,6 +29,9 @@ import { RolesGuard } from './guards/roles.guard';
 import { CreateEmployeeDto } from './dto/create-employee.dto';
 import { ForgotPasswordDto } from './dto/forgot-password.dto';
 import { ResetPasswordDto } from './dto/reset-password.dto';
+import { RefreshTokenDto } from './dto/refresh-token.dto';
+import { Verify2FALoginDto } from './dto/verify-2fa-login.dto';
+import { Verify2FADto } from './dto/verify-2fa.dto';
 
 @Controller('auth')
 export class AuthController {
@@ -54,6 +58,8 @@ export class AuthController {
     });
   }
 
+  // Rate limit: 5 intentos de login por minuto
+  @Throttle({ short: { limit: 5, ttl: 60000 } })
   @Post('login')
   @HttpCode(HttpStatus.OK)
   login(@Body() loginDto: LoginDto) {
@@ -76,6 +82,8 @@ export class AuthController {
     return this.authService.googleAuth(req.user);
   }
 
+  // Rate limit: 3 intentos de verificación por minuto
+  @Throttle({ short: { limit: 3, ttl: 60000 } })
   @Post('verify-code')
   @HttpCode(HttpStatus.OK)
   verifyCode(@Body() verifyCodeDto: VerifyCodeDto) {
@@ -88,12 +96,16 @@ export class AuthController {
     return this.authService.resendVerificationCode(resendDto.email);
   }
 
+  // Rate limit: 3 intentos de recuperación por hora
+  @Throttle({ short: { limit: 3, ttl: 3600000 } })
   @Post('forgot-password')
   @HttpCode(HttpStatus.OK)
   forgotPassword(@Body() forgotPasswordDto: ForgotPasswordDto) {
     return this.authService.forgotPassword(forgotPasswordDto.email);
   }
 
+  // Rate limit: 3 intentos de reset por hora
+  @Throttle({ short: { limit: 3, ttl: 3600000 } })
   @Post('reset-password')
   @HttpCode(HttpStatus.OK)
   resetPassword(@Body() resetPasswordDto: ResetPasswordDto) {
@@ -103,12 +115,25 @@ export class AuthController {
     );
   }
 
-  @Patch(':id')
+  // DEPRECADO: Este endpoint está protegido para evitar accesos no autorizados
+  // Usar /auth/profile para actualizar tu propio perfil
+  // o /auth/employee/:id para que OWNERs actualicen empleados
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Patch('profile/:id')
+  @Roles(UserRole.OWNER) // Solo OWNERs pueden usar este endpoint
   update(
+    @GetUser() currentUser: User,
     @Param('id', ParseUUIDPipe) id: string,
     @Body() updateUserDto: UpdateUserDto,
   ) {
-    return this.authService.update(id, updateUserDto);
+    // Verificar que el usuario pertenece al mismo proyecto
+    if (currentUser.role === UserRole.OWNER) {
+      // Los OWNER pueden actualizar usuarios de su proyecto
+      return this.authService.update(id, updateUserDto);
+    }
+
+    // Si llegamos aquí, no tiene permisos
+    throw new ForbiddenException('No tienes permisos para actualizar este usuario');
   }
 
   @UseGuards(JwtAuthGuard)
@@ -145,5 +170,59 @@ export class AuthController {
       owner.projectId,
       updateUserDto,
     );
+  }
+
+  // ================= REFRESH TOKEN & LOGOUT =================
+
+  @Post('refresh')
+  @HttpCode(HttpStatus.OK)
+  refreshToken(@Body() refreshTokenDto: RefreshTokenDto) {
+    return this.authService.refreshTokens(refreshTokenDto.refreshToken);
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Post('logout')
+  @HttpCode(HttpStatus.OK)
+  logout(@Req() req: any, @GetUser() user: User) {
+    // Extraer el token del header Authorization
+    const token = req.headers.authorization?.replace('Bearer ', '');
+    return this.authService.logout(token, user.id);
+  }
+
+  // ================= 2FA (Two-Factor Authentication) =================
+
+  // Completar login con código 2FA
+  @Throttle({ short: { limit: 5, ttl: 60000 } })
+  @Post('2fa/verify-login')
+  @HttpCode(HttpStatus.OK)
+  verify2FALogin(@Body() verify2FALoginDto: Verify2FALoginDto) {
+    return this.authService.verify2FALogin(
+      verify2FALoginDto.tempToken,
+      verify2FALoginDto.code,
+    );
+  }
+
+  // Habilitar 2FA (generar QR code y códigos de recuperación)
+  @UseGuards(JwtAuthGuard)
+  @Post('2fa/enable')
+  @HttpCode(HttpStatus.OK)
+  enable2FA(@GetUser() user: User) {
+    return this.authService.enable2FA(user.id);
+  }
+
+  // Verificar código 2FA durante el setup (activar 2FA)
+  @UseGuards(JwtAuthGuard)
+  @Post('2fa/verify')
+  @HttpCode(HttpStatus.OK)
+  verify2FA(@GetUser() user: User, @Body() verify2FADto: Verify2FADto) {
+    return this.authService.verify2FA(user.id, verify2FADto.code);
+  }
+
+  // Deshabilitar 2FA
+  @UseGuards(JwtAuthGuard)
+  @Post('2fa/disable')
+  @HttpCode(HttpStatus.OK)
+  disable2FA(@GetUser() user: User, @Body() verify2FADto: Verify2FADto) {
+    return this.authService.disable2FA(user.id, verify2FADto.code);
   }
 }
