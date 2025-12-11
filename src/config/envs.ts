@@ -12,6 +12,9 @@ interface EnvVars {
   GOOGLE_CLIENT_SECRET: string;
   GOOGLE_REDIRECT_URI: string;
   FRONTEND_URL?: string;
+  SUBSCRIPTION_TEST_EMAILS?: string;
+  PROJECT_ADMIN_EMAILS?: string;
+  PROJECT_ADMIN_TOKEN?: string;
 }
 
 const log = new Logger('EnvVars - ');
@@ -36,6 +39,9 @@ const envVarsSchema = joi
     GOOGLE_CLIENT_SECRET: joi.string().min(20).required(),
     GOOGLE_REDIRECT_URI: joi.string().uri().required(),
     FRONTEND_URL: joi.string().uri().optional(),
+    SUBSCRIPTION_TEST_EMAILS: joi.string().optional(),
+    PROJECT_ADMIN_EMAILS: joi.string().optional(),
+    PROJECT_ADMIN_TOKEN: joi.string().min(6).optional(),
   })
   .unknown(true);
 
@@ -58,4 +64,15 @@ export const envs = {
   googleClientSecret: envVars.GOOGLE_CLIENT_SECRET,
   googleRedirectUri: envVars.GOOGLE_REDIRECT_URI,
   frontendUrl: envVars.FRONTEND_URL,
+  subscriptionTestEmails: envVars.SUBSCRIPTION_TEST_EMAILS
+    ? envVars.SUBSCRIPTION_TEST_EMAILS.split(',')
+        .map((email) => email.trim().toLowerCase())
+        .filter(Boolean)
+    : undefined,
+  projectAdminEmails: envVars.PROJECT_ADMIN_EMAILS
+    ? envVars.PROJECT_ADMIN_EMAILS.split(',')
+        .map((email) => email.trim().toLowerCase())
+        .filter(Boolean)
+    : undefined,
+  projectAdminToken: envVars.PROJECT_ADMIN_TOKEN,
 };

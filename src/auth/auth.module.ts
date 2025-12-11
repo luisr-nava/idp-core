@@ -13,6 +13,7 @@ import { PassportModule } from '@nestjs/passport';
 import { JwtStrategy } from './strategies/jwt.strategies';
 import { GoogleStrategy } from './strategies/google.strategy';
 import { MailModule } from '@/mail/mail.module';
+import { Project } from '@/projects/entities/project.entity';
 
 @Module({
   controllers: [AuthController],
@@ -26,6 +27,7 @@ import { MailModule } from '@/mail/mail.module';
       PasswordReset,
       RefreshToken,
       TokenBlacklist,
+      Project,
     ]),
     PassportModule.register({
       defaultStrategy: 'jwt',

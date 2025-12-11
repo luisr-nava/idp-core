@@ -1,35 +1,46 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { Resend } from 'resend';
-import { envs } from '@/config';
+import * as nodemailer from 'nodemailer';
 
 @Injectable()
 export class MailService {
-  private resend: Resend;
+  private transporter: nodemailer.Transporter;
   private readonly logger = new Logger(MailService.name);
 
   constructor() {
-    this.resend = new Resend(envs.resendApiKey);
+    // Configurar nodemailer para usar MailHog
+    this.transporter = nodemailer.createTransport({
+      host: 'mailhog',
+      port: 1025,
+      secure: false,
+      ignoreTLS: true,
+    });
   }
 
-  async sendVerificationEmail(email: string, code: string, fullName: string, projectId: string) {
+  async sendVerificationEmail(
+    email: string,
+    code: string,
+    fullName: string,
+    projectName: string,
+  ) {
     try {
-      // Obtener la plantilla HTML
-      const emailTemplate = await this.getEmailTemplate(code, fullName, projectId);
+      const senderDomain = this.toSlug(projectName);
 
-      const { data, error } = await this.resend.emails.send({
-        from: `${projectId} <onboarding@resend.dev>`,
-        to: [email],
-        subject: `Verificación de cuenta - ${projectId}`,
+      // Obtener la plantilla HTML
+      const emailTemplate = await this.getEmailTemplate(
+        code,
+        fullName,
+        projectName,
+      );
+
+      const info = await this.transporter.sendMail({
+        from: `"${projectName}" <noreply@${senderDomain}.com>`,
+        to: email,
+        subject: `Verificación de cuenta - ${projectName}`,
         html: emailTemplate,
       });
 
-      if (error) {
-        this.logger.error(`Error al enviar email a ${email}:`, error);
-        throw error;
-      }
-
-      this.logger.log(`Email de verificación enviado a ${email} - ID: ${data?.id}`);
-      return { success: true, emailId: data?.id };
+      this.logger.log(`Email de verificación enviado a ${email} - ID: ${info.messageId}`);
+      return { success: true, emailId: info.messageId };
     } catch (error) {
       this.logger.error(`Error al enviar email a ${email}:`, error);
       throw error;
@@ -40,34 +51,27 @@ export class MailService {
     email: string,
     resetLink: string,
     fullName: string,
-    projectId: string,
+    projectName: string,
   ) {
     try {
       const emailTemplate = await this.getPasswordResetTemplate(
         resetLink,
         fullName,
-        projectId,
+        projectName,
       );
+      const senderDomain = this.toSlug(projectName);
 
-      const { data, error } = await this.resend.emails.send({
-        from: `${projectId} <onboarding@resend.dev>`,
-        to: [email],
-        subject: `Recuperación de contraseña - ${projectId}`,
+      const info = await this.transporter.sendMail({
+        from: `"${projectName}" <noreply@${senderDomain}.com>`,
+        to: email,
+        subject: `Recuperación de contraseña - ${projectName}`,
         html: emailTemplate,
       });
 
-      if (error) {
-        this.logger.error(
-          `Error al enviar email de recuperación a ${email}:`,
-          error,
-        );
-        throw error;
-      }
-
       this.logger.log(
-        `Email de recuperación de contraseña enviado a ${email} - ID: ${data?.id}`,
+        `Email de recuperación de contraseña enviado a ${email} - ID: ${info.messageId}`,
       );
-      return { success: true, emailId: data?.id };
+      return { success: true, emailId: info.messageId };
     } catch (error) {
       this.logger.error(
         `Error al enviar email de recuperación a ${email}:`,
@@ -80,7 +84,7 @@ export class MailService {
   private async getEmailTemplate(
     code: string,
     fullName: string,
-    projectId: string,
+    projectName: string,
   ): Promise<string> {
     // TODO: Llamar al servicio externo para obtener la plantilla
     // Por ahora, retorno una plantilla básica
@@ -169,7 +173,7 @@ export class MailService {
         <body>
           <div style="padding: 16px;">
             <div class="container">
-              <h1>¡Bienvenido a ${projectId}, ${fullName}!</h1>
+              <h1>¡Bienvenido a ${projectName}, ${fullName}!</h1>
 
               <div class="content">
                 <p>Gracias por registrarte. Para activar tu cuenta, ingresá el siguiente código:</p>
@@ -192,7 +196,7 @@ export class MailService {
               
               <div class="footer">
                   <p style="margin-top:18px;">Este código es válido durante 24 horas.</p>
-                © 2025 ${projectId} — Identity Provider<br />
+                © 2025 ${projectName} — Identity Provider<br />
                 Desarrollado por Luis Navarro
               </div>
             </div>
@@ -205,7 +209,7 @@ export class MailService {
   private async getPasswordResetTemplate(
     resetLink: string,
     fullName: string,
-    projectId: string,
+    projectName: string,
   ): Promise<string> {
     // TODO: Llamar al servicio externo para obtener la plantilla
     // Por ahora, retorno una plantilla básica
@@ -285,7 +289,7 @@ export class MailService {
               <div class="content">
                 <p>Hola ${fullName},</p>
 
-                <p>Recibimos una solicitud para restablecer la contraseña de tu cuenta en ${projectId}.</p>
+                <p>Recibimos una solicitud para restablecer la contraseña de tu cuenta en ${projectName}.</p>
 
                 <p>Hacé clic en el siguiente botón para crear una nueva contraseña:</p>
 
@@ -312,7 +316,7 @@ export class MailService {
 
               <div class="footer">
                 <p style="margin-top:18px;">Este enlace es válido durante 1 hora.</p>
-                © 2025 ${projectId} — Identity Provider<br />
+                © 2025 ${projectName} — Identity Provider<br />
                 Desarrollado por Luis Navarro
               </div>
             </div>
@@ -320,5 +324,13 @@ export class MailService {
         </body>
       </html>
     `;
+  }
+
+  private toSlug(value: string): string {
+    const slug = value
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, '');
+    return slug || 'app';
   }
 }

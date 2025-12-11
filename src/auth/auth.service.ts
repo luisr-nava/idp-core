@@ -7,7 +7,7 @@ import {
   BadRequestException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { User, UserRole } from './entities/user.entity';
+import { SubscriptionType, User, UserRole } from './entities/user.entity';
 import { VerificationCode } from './entities/verification-code.entity';
 import { PasswordReset } from './entities/password-reset.entity';
 import { RefreshToken } from './entities/refresh-token.entity';
@@ -26,10 +26,12 @@ import * as crypto from 'crypto';
 import { authenticator } from 'otplib';
 import * as QRCode from 'qrcode';
 import { Cron, CronExpression } from '@nestjs/schedule';
+import { Project } from '@/projects/entities/project.entity';
 
 @Injectable()
 export class AuthService {
   private readonly logger = new Logger(AuthService.name);
+  private readonly devProEmails = new Set(envs.subscriptionTestEmails || []);
 
   constructor(
     @InjectRepository(User)
@@ -41,45 +43,49 @@ export class AuthService {
     @InjectRepository(RefreshToken)
     private readonly refreshTokenRepository: Repository<RefreshToken>,
     @InjectRepository(TokenBlacklist)
-    private readonly tokenBlacklistRepository: Repository<TokenBlacklist>,
-    private readonly jwtService: JwtService,
-    private readonly mailService: MailService,
+  private readonly tokenBlacklistRepository: Repository<TokenBlacklist>,
+  @InjectRepository(Project)
+  private readonly projectRepository: Repository<Project>,
+  private readonly jwtService: JwtService,
+  private readonly mailService: MailService,
   ) {}
   async createUser(createUserDto: CreateUserDto) {
-    const { password, ...user } = createUserDto;
+    const { password, projectId, role: providedRole, ...user } =
+      createUserDto;
+    const role = providedRole || UserRole.EMPLOYEE;
 
-    // Generar projectId si es OWNER y no tiene uno
-    let projectId = user.projectId;
-    if (user.role === UserRole.OWNER && !projectId) {
-      projectId = uuidv4();
+    if (!projectId) {
+      throw new BadRequestException(
+        'El projectId es requerido para crear un usuario.',
+      );
     }
 
+    const project = await this.ensureProjectExists(projectId);
+
     // Validar que el email no exista (para OWNER, validar globalmente; para EMPLOYEE, validar por proyecto)
-    if (user.role === UserRole.OWNER) {
+    if (role === UserRole.OWNER) {
       await this.validateOwnerEmailUnique(user.email);
-    } else if (projectId) {
+    } else {
       await this.validateUserExistence(user.email, projectId);
     }
 
     const newUser = this.authRepository.create({
       ...user,
+      role,
       projectId,
+      subscriptionType: project.subscriptionType,
+      subscriptionExpiresAt: project.subscriptionExpiresAt,
       password: bcrypt.hashSync(password, 10),
     });
 
     await this.authRepository.save(newUser);
-
-    // Logging de seguridad
-    this.logger.log(
-      `✅ Usuario creado: ${user.email} | Rol: ${user.role} | ProjectId: ${projectId}`,
-    );
 
     // Enviar email de verificación con el projectId
     await this.createAndSendVerificationCode(
       newUser.id,
       newUser.email,
       newUser.fullName,
-      newUser.projectId,
+      project.name,
     );
 
     return {
@@ -108,7 +114,8 @@ export class AuthService {
     }
 
     // Protección contra timing attacks: siempre ejecutar bcrypt incluso si el usuario no existe
-    const dummyHash = '$2b$10$invalidhashtopreventtimingattackXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX';
+    const dummyHash =
+      '$2b$10$invalidhashtopreventtimingattackXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX';
     const isPasswordValid = user
       ? await bcrypt.compare(password, user.password)
       : await bcrypt.compare(password, dummyHash);
@@ -124,9 +131,7 @@ export class AuthService {
       this.logger.warn(
         `🚫 Intento de login fallido: ${email} | IP: ${this.getClientInfo()}`,
       );
-      throw new UnauthorizedException(
-        'Email o contraseña incorrectos',
-      );
+      throw new UnauthorizedException('Email o contraseña incorrectos');
     }
 
     // Verificar si el usuario ha verificado su cuenta
@@ -168,6 +173,11 @@ export class AuthService {
       lockUntil: undefined,
       lastLogin: new Date(),
     });
+    const project = await this.enforceSubscription(user);
+    if (project) {
+      user.subscriptionType = project.subscriptionType;
+      user.subscriptionExpiresAt = project.subscriptionExpiresAt;
+    }
 
     const token = this.getJwtToken({
       id: user.id,
@@ -198,16 +208,28 @@ export class AuthService {
       email: googleUser.email,
     });
 
-    // Si el usuario no existe, crearlo con nuevo projectId
+    // Si el usuario no existe, crearlo con nuevo proyecto y trial por proyecto
     if (!user) {
-      const projectId = uuidv4(); // Generar nuevo projectId
+      const projectName = this.buildProjectNameFromUser(
+        googleUser.fullName,
+        googleUser.email,
+      );
+
+      const project = await this.projectRepository.save(
+        this.projectRepository.create({
+          name: projectName,
+          ...this.getProjectTrialSubscription(),
+        }),
+      );
 
       const newUser = this.authRepository.create({
         email: googleUser.email,
         fullName: googleUser.fullName,
         password: bcrypt.hashSync(crypto.randomBytes(32).toString('hex'), 10), // Password criptográficamente seguro
         role: UserRole.OWNER,
-        projectId,
+        projectId: project.uuid,
+        subscriptionType: project.subscriptionType,
+        subscriptionExpiresAt: project.subscriptionExpiresAt,
         isVerify: true, // Usuarios de Google están verificados automáticamente
         profileImage: googleUser.picture,
       });
@@ -219,6 +241,12 @@ export class AuthService {
         await this.authRepository.update(user.id, { isVerify: true });
         user.isVerify = true;
       }
+    }
+
+    const project = await this.enforceSubscription(user);
+    if (project) {
+      user.subscriptionType = project.subscriptionType;
+      user.subscriptionExpiresAt = project.subscriptionExpiresAt;
     }
 
     const token = this.getJwtToken({
@@ -247,10 +275,7 @@ export class AuthService {
 
     // Evitar duplicado de email
     if (user.email && user.email !== existingUser.email) {
-      await this.validateUserExistence(
-        user.email,
-        existingUser.projectId,
-      );
+      await this.validateUserExistence(user.email, existingUser.projectId);
     }
 
     // Hashear password si viene
@@ -335,10 +360,7 @@ export class AuthService {
 
     // Evitar duplicado de email si se está cambiando
     if (updateData.email && updateData.email !== employee.email) {
-      await this.validateUserExistence(
-        updateData.email,
-        ownerProjectId,
-      );
+      await this.validateUserExistence(updateData.email, ownerProjectId);
     }
 
     // Preparar datos a actualizar
@@ -370,10 +392,7 @@ export class AuthService {
 
     // Evitar duplicado de email si se está cambiando
     if (updateData.email && updateData.email !== user.email) {
-      await this.validateUserExistence(
-        updateData.email,
-        user.projectId,
-      );
+      await this.validateUserExistence(updateData.email, user.projectId);
     }
 
     // Preparar datos a actualizar
@@ -392,9 +411,7 @@ export class AuthService {
     await this.authRepository.update(userId, dataToUpdate);
 
     // Logging de actualización de perfil
-    this.logger.log(
-      `📝 Perfil actualizado: ${user.email} | UserId: ${userId}`,
-    );
+    this.logger.log(`📝 Perfil actualizado: ${user.email} | UserId: ${userId}`);
 
     return {
       success: true,
@@ -423,7 +440,9 @@ export class AuthService {
     }
 
     // Actualizar el usuario a verificado usando el userId del código
-    await this.authRepository.update(verificationCode.userId, { isVerify: true });
+    await this.authRepository.update(verificationCode.userId, {
+      isVerify: true,
+    });
 
     // Eliminar el código de verificación de la base de datos
     await this.verificationCodeRepository.delete(verificationCode.id);
@@ -463,11 +482,12 @@ export class AuthService {
     }
 
     // Reenviar el código de verificación (elimina el antiguo y crea uno nuevo)
+    const project = await this.ensureProjectExists(user.projectId);
     await this.createAndSendVerificationCode(
       user.id,
       user.email,
       user.fullName,
-      user.projectId,
+      project.name,
     );
 
     return {
@@ -521,12 +541,14 @@ export class AuthService {
     // Construir el link de reset con el token original (este se envía al usuario)
     const resetLink = `${envs.frontendUrl || 'http://localhost:3000'}/reset-password?token=${resetToken}`;
 
+    const project = await this.ensureProjectExists(user.projectId);
+
     // Enviar email con el link de reset
     await this.mailService.sendPasswordResetEmail(
       user.email,
       resetLink,
       user.fullName,
-      user.projectId,
+      project.name,
     );
 
     return {
@@ -587,7 +609,7 @@ export class AuthService {
     userId: string,
     email: string,
     fullName: string,
-    projectId: string,
+    projectName: string,
   ) {
     // Eliminar códigos antiguos del usuario antes de crear uno nuevo
     await this.verificationCodeRepository.delete({ userId });
@@ -604,7 +626,7 @@ export class AuthService {
     await this.verificationCodeRepository.save(verificationCode);
 
     // Enviar el email con el código y el projectId
-    await this.mailService.sendVerificationEmail(email, code, fullName, projectId);
+    await this.mailService.sendVerificationEmail(email, code, fullName, projectName);
   }
 
   private async validateUserExistence(
@@ -616,8 +638,113 @@ export class AuthService {
       projectId,
     });
     if (userExist) {
-      throw new ConflictException(`El usuario con email: ${email} ya existe en este proyecto.`);
+      throw new ConflictException(
+        `El usuario con email: ${email} ya existe en este proyecto.`,
+      );
     }
+  }
+
+  private async ensureProjectExists(projectId: string): Promise<Project> {
+    const project = await this.projectRepository.findOne({
+      where: { uuid: projectId },
+    });
+
+    if (!project) {
+      throw new BadRequestException(
+        `El proyecto con id ${projectId} no existe. Crea el proyecto antes de agregar usuarios.`,
+      );
+    }
+
+    return project;
+  }
+
+  private getProjectTrialSubscription(): {
+    subscriptionType: SubscriptionType;
+    subscriptionExpiresAt: Date;
+  } {
+    const trialDays = 15;
+    return {
+      subscriptionType: SubscriptionType.PRO,
+      subscriptionExpiresAt: new Date(
+        Date.now() + trialDays * 24 * 60 * 60 * 1000,
+      ),
+    };
+  }
+
+  private async enforceSubscription(user: User): Promise<Project | null> {
+    const project = await this.projectRepository.findOne({
+      where: { uuid: user.projectId },
+    });
+
+    if (!project) {
+      this.logger.warn(
+        `⚠️ Proyecto no encontrado para usuario ${user.email} | ProjectId: ${user.projectId}`,
+      );
+      return null;
+    }
+
+    if (this.isDevProEmail(user.email)) {
+      if (
+        project.subscriptionType !== SubscriptionType.PRO ||
+        project.subscriptionExpiresAt !== null
+      ) {
+        await this.projectRepository.update(
+          { uuid: project.uuid },
+          {
+            subscriptionType: SubscriptionType.PRO,
+            subscriptionExpiresAt: null,
+          },
+        );
+
+        project.subscriptionType = SubscriptionType.PRO;
+        project.subscriptionExpiresAt = null;
+
+        this.logger.log(
+          `🧪 PRO de prueba aplicado al proyecto ${project.name} por email autorizado: ${user.email}`,
+        );
+      }
+      return project;
+    }
+
+    if (
+      project.subscriptionType !== SubscriptionType.FREE &&
+      project.subscriptionExpiresAt &&
+      project.subscriptionExpiresAt.getTime() < Date.now()
+    ) {
+      await this.projectRepository.update(
+        { uuid: project.uuid },
+        {
+          subscriptionType: SubscriptionType.FREE,
+          subscriptionExpiresAt: null,
+        },
+      );
+
+      project.subscriptionType = SubscriptionType.FREE;
+      project.subscriptionExpiresAt = null;
+
+      this.logger.log(
+        `ℹ️ Suscripción del proyecto ${project.name} expirada. Ahora es FREE | ProjectId: ${project.uuid}`,
+      );
+    }
+
+    return project;
+  }
+
+  private isDevProEmail(email: string): boolean {
+    return this.devProEmails.has(email.toLowerCase());
+  }
+
+  private buildProjectNameFromUser(
+    fullName: string | undefined,
+    email: string,
+  ): string {
+    const base = (fullName || email || 'project')
+      .toString()
+      .trim()
+      .replace(/\s+/g, '-')
+      .slice(0, 40);
+    const suffix = uuidv4().slice(0, 6);
+    return `${base || 'project'}-${suffix}`;
   }
 
   private async validateOwnerEmailUnique(email: string): Promise<void> {
@@ -808,7 +935,9 @@ export class AuthService {
       expiresAt: LessThan(new Date()),
     });
 
-    this.logger.log(`🧹 Tokens expirados eliminados de blacklist: ${deleted.affected || 0}`);
+    this.logger.log(
+      `🧹 Tokens expirados eliminados de blacklist: ${deleted.affected || 0}`,
+    );
   }
 
   // Limpieza automática de refresh tokens expirados
@@ -819,7 +948,9 @@ export class AuthService {
       expiresAt: LessThan(new Date()),
     });
 
-    this.logger.log(`🧹 Refresh tokens expirados eliminados: ${deleted.affected || 0}`);
+    this.logger.log(
+      `🧹 Refresh tokens expirados eliminados: ${deleted.affected || 0}`,
+    );
   }
 
   // ==================== TWO-FACTOR AUTHENTICATION ====================
@@ -850,15 +981,13 @@ export class AuthService {
     });
 
     // Generar QR code
-    const otpauthUrl = authenticator.keyuri(
-      user.email,
-      'IDP-Core',
-      secret,
-    );
+    const otpauthUrl = authenticator.keyuri(user.email, 'IDP-Core', secret);
 
     const qrCodeDataUrl = await QRCode.toDataURL(otpauthUrl);
 
-    this.logger.log(`🔐 2FA habilitado para: ${user.email} | UserId: ${userId}`);
+    this.logger.log(
+      `🔐 2FA habilitado para: ${user.email} | UserId: ${userId}`,
+    );
 
     return {
       secret,

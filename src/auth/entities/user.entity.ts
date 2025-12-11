@@ -7,6 +7,12 @@ import {
   UpdateDateColumn,
 } from 'typeorm';
 
+export enum SubscriptionType {
+  FREE = 'FREE',
+  PREMIUM = 'PREMIUM',
+  PRO = 'PRO',
+}
+
 export enum UserRole {
   OWNER = 'OWNER',
   MANAGER = 'MANAGER',
@@ -88,4 +94,14 @@ export class User {
 
   @Column()
   projectId: string;
+
+  @Column({
+    type: 'enum',
+    enum: SubscriptionType,
+    default: SubscriptionType.FREE,
+  })
+  subscriptionType: SubscriptionType;
+
+  @Column({ type: 'timestamp', nullable: true })
+  subscriptionExpiresAt?: Date | null;
 }

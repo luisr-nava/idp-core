@@ -6,6 +6,7 @@ import {
   IsNotEmpty,
   IsOptional,
   IsString,
+  IsUUID,
   Length,
   Matches,
   MinLength,
@@ -101,9 +102,14 @@ export class CreateUserDto {
   @Transform(({ value }) => sanitizeText(value))
   emergencyContact?: string;
 
-  @IsOptional()
   @IsString()
-  projectId?: string;
+  @IsNotEmpty({
+    message: 'El projectId es requerido',
+  })
+  @IsUUID(4, {
+    message: 'El projectId debe ser un UUID válido',
+  })
+  projectId: string;
 
   @IsOptional()
   @IsBoolean()
