@@ -65,12 +65,6 @@ export class AuthService {
       );
     }
 
-    if (role === UserRole.OWNER && !stripeCustomerId) {
-      throw new BadRequestException(
-        'El stripeCustomerId es requerido para el usuario owner.',
-      );
-    }
-
     const project = await this.ensureProjectExists(projectId);
 
     // Validar que el email no exista (para OWNER, validar globalmente; para EMPLOYEE, validar por proyecto)
@@ -84,7 +78,8 @@ export class AuthService {
       ...user,
       role,
       projectId,
-      stripeCustomerId: role === UserRole.OWNER ? stripeCustomerId : null,
+      stripeCustomerId:
+        role === UserRole.OWNER ? stripeCustomerId ?? null : null,
       subscriptionType: project.subscriptionType,
       subscriptionExpiresAt: project.subscriptionExpiresAt,
       password: bcrypt.hashSync(password, 10),
