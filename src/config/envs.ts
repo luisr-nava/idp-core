@@ -15,6 +15,8 @@ interface EnvVars {
   SUBSCRIPTION_TEST_EMAILS?: string;
   PROJECT_ADMIN_EMAILS?: string;
   PROJECT_ADMIN_TOKEN?: string;
+  PAYMENT_WEBHOOK_SECRET?: string;
+  PAYMENT_WEBHOOK_HEADER?: string;
 }
 
 const log = new Logger('EnvVars - ');
@@ -42,6 +44,8 @@ const envVarsSchema = joi
     SUBSCRIPTION_TEST_EMAILS: joi.string().optional(),
     PROJECT_ADMIN_EMAILS: joi.string().optional(),
     PROJECT_ADMIN_TOKEN: joi.string().min(6).optional(),
+    PAYMENT_WEBHOOK_SECRET: joi.string().min(10).optional(),
+    PAYMENT_WEBHOOK_HEADER: joi.string().optional(),
   })
   .unknown(true);
 
@@ -75,4 +79,6 @@ export const envs = {
         .filter(Boolean)
     : undefined,
   projectAdminToken: envVars.PROJECT_ADMIN_TOKEN,
+  paymentWebhookSecret: envVars.PAYMENT_WEBHOOK_SECRET,
+  paymentWebhookHeader: envVars.PAYMENT_WEBHOOK_HEADER || 'x-webhook-secret',
 };

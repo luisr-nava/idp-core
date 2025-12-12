@@ -189,6 +189,8 @@ export class AuthController {
     return this.authService.logout(token, user.id);
   }
 
+  
+
   // ================= 2FA (Two-Factor Authentication) =================
 
   // Completar login con código 2FA

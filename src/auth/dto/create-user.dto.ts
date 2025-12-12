@@ -46,10 +46,13 @@ export class CreateUserDto {
   @MaxLength(128, {
     message: 'La contraseña no puede exceder 128 caracteres',
   })
-  @Matches(/^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[@$!%*?&])[A-Za-z\d@$!%*?&]+$/, {
-    message:
-      'La contraseña debe contener al menos: 1 mayúscula, 1 minúscula, 1 número y 1 carácter especial (@$!%*?&)',
-  })
+  @Matches(
+    /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[@$!%*?&])[A-Za-z\d@$!%*?&]+$/,
+    {
+      message:
+        'La contraseña debe contener al menos: 1 mayúscula, 1 minúscula, 1 número y 1 carácter especial (@$!%*?&)',
+    },
+  )
   password: string;
 
   @IsEnum(UserRole)
@@ -114,4 +117,8 @@ export class CreateUserDto {
   @IsOptional()
   @IsBoolean()
   isVerify?: boolean;
+
+  @IsString()
+  @IsOptional()
+  stripeCustomerId?: string;
 }

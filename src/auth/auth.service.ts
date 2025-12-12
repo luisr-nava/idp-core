@@ -50,13 +50,24 @@ export class AuthService {
   private readonly mailService: MailService,
   ) {}
   async createUser(createUserDto: CreateUserDto) {
-    const { password, projectId, role: providedRole, ...user } =
-      createUserDto;
+    const {
+      password,
+      projectId,
+      role: providedRole,
+      stripeCustomerId,
+      ...user
+    } = createUserDto;
     const role = providedRole || UserRole.EMPLOYEE;
 
     if (!projectId) {
       throw new BadRequestException(
         'El projectId es requerido para crear un usuario.',
+      );
+    }
+
+    if (role === UserRole.OWNER && !stripeCustomerId) {
+      throw new BadRequestException(
+        'El stripeCustomerId es requerido para el usuario owner.',
       );
     }
 
@@ -73,6 +84,7 @@ export class AuthService {
       ...user,
       role,
       projectId,
+      stripeCustomerId: role === UserRole.OWNER ? stripeCustomerId : null,
       subscriptionType: project.subscriptionType,
       subscriptionExpiresAt: project.subscriptionExpiresAt,
       password: bcrypt.hashSync(password, 10),
@@ -265,7 +277,14 @@ export class AuthService {
 
   async update(id: string, updateUserDto: UpdateUserDto) {
     // SEGURIDAD: Excluir campos sensibles que no deben ser actualizables directamente
-    const { password, projectId, role, isVerify, ...user } = updateUserDto;
+    const {
+      password,
+      projectId,
+      role,
+      isVerify,
+      stripeCustomerId,
+      ...user
+    } = updateUserDto;
 
     const existingUser = await this.authRepository.findOneBy({ id });
 
@@ -280,6 +299,13 @@ export class AuthService {
 
     // Hashear password si viene
     const updatedData: UpdateUserDto = { ...user };
+
+    if (existingUser.role === UserRole.OWNER && stripeCustomerId !== undefined) {
+      updatedData.stripeCustomerId = stripeCustomerId;
+    } else if (existingUser.role !== UserRole.OWNER) {
+      updatedData.stripeCustomerId = null;
+    }
+
     if (password) {
       updatedData.password = await bcrypt.hash(password, 10);
     }
@@ -364,7 +390,10 @@ export class AuthService {
     }
 
     // Preparar datos a actualizar
-    const dataToUpdate: Partial<User> = { ...updateData };
+    const dataToUpdate: Partial<User> = {
+      ...updateData,
+      stripeCustomerId: null,
+    };
 
     // Hashear password si viene
     if (password) {

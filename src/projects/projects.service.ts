@@ -1,9 +1,15 @@
-import { ConflictException, Injectable, Logger } from '@nestjs/common';
+import {
+  ConflictException,
+  Injectable,
+  Logger,
+  NotFoundException,
+} from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { CreateProjectDto } from './dto/create-project.dto';
 import { Project } from './entities/project.entity';
-import { SubscriptionType } from '@/auth/entities/user.entity';
+import { SubscriptionType, User } from '@/auth/entities/user.entity';
+import { UpdateSubscriptionDto } from './dto/update-subscription.dto';
 
 @Injectable()
 export class ProjectsService {
@@ -12,6 +18,8 @@ export class ProjectsService {
   constructor(
     @InjectRepository(Project)
     private readonly projectRepository: Repository<Project>,
+    @InjectRepository(User)
+    private readonly userRepository: Repository<User>,
   ) {}
 
   async create(createProjectDto: CreateProjectDto) {
@@ -40,6 +48,46 @@ export class ProjectsService {
     return {
       uuid: savedProject.uuid,
       name: savedProject.name,
+    };
+  }
+
+  async updateSubscription(dto: UpdateSubscriptionDto) {
+    const project = await this.projectRepository.findOne({
+      where: { uuid: dto.projectId },
+    });
+
+    if (!project) {
+      throw new NotFoundException('Proyecto no encontrado');
+    }
+
+    const expiresAt =
+      dto.durationDays !== undefined
+        ? new Date(Date.now() + dto.durationDays * 24 * 60 * 60 * 1000)
+        : dto.expiresAt
+          ? new Date(dto.expiresAt)
+          : null;
+
+    project.subscriptionType = dto.subscriptionType;
+    project.subscriptionExpiresAt = expiresAt;
+
+    await this.projectRepository.save(project);
+    await this.userRepository.update(
+      { projectId: project.uuid },
+      {
+        subscriptionType: project.subscriptionType,
+        subscriptionExpiresAt: project.subscriptionExpiresAt,
+      },
+    );
+
+    this.logger.log(
+      `🔄 Suscripción actualizada: ${project.name} -> ${project.subscriptionType} (expira: ${expiresAt}) por user ${dto.userId}`,
+    );
+
+    return {
+      uuid: project.uuid,
+      name: project.name,
+      subscriptionType: project.subscriptionType,
+      subscriptionExpiresAt: project.subscriptionExpiresAt,
     };
   }
 

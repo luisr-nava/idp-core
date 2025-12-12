@@ -104,4 +104,7 @@ export class User {
 
   @Column({ type: 'timestamp', nullable: true })
   subscriptionExpiresAt?: Date | null;
+  
+  @Column({ type: 'varchar', nullable: true })
+  stripeCustomerId: string | null;
 }
