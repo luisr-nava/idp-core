@@ -298,7 +298,7 @@ export class AuthService {
     }
 
     // Hashear password si viene
-    const updatedData: UpdateUserDto = { ...user };
+    const updatedData: Partial<User> = { ...user };
 
     if (existingUser.role === UserRole.OWNER && stripeCustomerId !== undefined) {
       updatedData.stripeCustomerId = stripeCustomerId;
