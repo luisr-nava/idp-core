@@ -78,8 +78,7 @@ export class AuthService {
       ...user,
       role,
       projectId,
-      stripeCustomerId:
-        role === UserRole.OWNER ? stripeCustomerId ?? null : null,
+      stripeCustomerId: stripeCustomerId ?? null,
       subscriptionType: project.subscriptionType,
       subscriptionExpiresAt: project.subscriptionExpiresAt,
       password: bcrypt.hashSync(password, 10),
@@ -99,6 +98,7 @@ export class AuthService {
       message:
         'Usuario creado correctamente. Se ha enviado un código de verificación a tu email',
       projectId: newUser.projectId,
+      userId: newUser.id,
     };
   }
 
