@@ -44,8 +44,29 @@ async function bootstrap() {
   );
 
   // Límite de tamaño de request (prevenir ataques DoS)
-  app.use(express.json({ limit: '10mb' }));
-  app.use(express.urlencoded({ limit: '10mb', extended: true }));
+  // Webhook Stripe necesita raw body
+  app.use(
+    '/api/v1/billing/webhook',
+    express.raw({ type: 'application/json' }),
+    (req, _res, next) => {
+      (req as any).rawBody = req.body;
+      next();
+    },
+  );
+
+  app.use((req, res, next) => {
+    if (req.originalUrl === '/api/v1/billing/webhook') {
+      return next();
+    }
+    return express.json({ limit: '10mb' })(req, res, next);
+  });
+
+  app.use((req, res, next) => {
+    if (req.originalUrl === '/api/v1/billing/webhook') {
+      return next();
+    }
+    return express.urlencoded({ limit: '10mb', extended: true })(req, res, next);
+  });
 
   app.setGlobalPrefix('api/v1');
 

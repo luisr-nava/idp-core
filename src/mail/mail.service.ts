@@ -81,6 +81,38 @@ export class MailService {
     }
   }
 
+  // Security-sensitive: se usa para recuperación por documento
+  async sendIdentityRecoveryEmail(
+    email: string,
+    recoveryLink: string,
+    fullName: string,
+    projectName: string,
+  ) {
+    const senderDomain = this.toSlug(projectName);
+    const html = `
+      <html>
+        <body style="font-family: Arial, sans-serif;">
+          <p>Hola ${fullName || ''},</p>
+          <p>Recibimos una solicitud de recuperación de cuenta por documento de identidad.</p>
+          <p>Si fuiste vos, seguí este enlace para continuar: <a href="${recoveryLink}">Recuperar cuenta</a></p>
+          <p>Si no realizaste esta solicitud, podés ignorar este correo.</p>
+        </body>
+      </html>
+    `;
+
+    const info = await this.transporter.sendMail({
+      from: `"${projectName}" <noreply@${senderDomain}.com>`,
+      to: email,
+      subject: `Recuperación de cuenta - ${projectName}`,
+      html,
+    });
+
+    this.logger.log(
+      `Email de recuperación por identidad enviado a ${email} - ID: ${info.messageId}`,
+    );
+    return { success: true, emailId: info.messageId };
+  }
+
   private async getEmailTemplate(
     code: string,
     fullName: string,

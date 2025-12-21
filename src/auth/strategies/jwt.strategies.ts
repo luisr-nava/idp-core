@@ -23,8 +23,18 @@ export class JwtStrategy extends PassportStrategy(Strategy, 'jwt') {
     });
   }
 
-  async validate(req: any, payload: { id: string; role: string; projectId: string }) {
-    const { id, projectId } = payload;
+  async validate(
+    req: any,
+    payload: {
+      sub: string;
+      role: string;
+      ownerId?: string | null;
+      appKey: string;
+      plan?: string;
+      subscriptionStatus?: string;
+    },
+  ) {
+    const { sub, appKey } = payload;
 
     // Extraer el token del header
     const token = req.headers.authorization?.replace('Bearer ', '');
@@ -42,11 +52,11 @@ export class JwtStrategy extends PassportStrategy(Strategy, 'jwt') {
       }
     }
 
-    if (!id || !projectId) {
+    if (!sub || !appKey) {
       throw new UnauthorizedException('Token inválido o incompleto');
     }
 
-    const user = await this.userRepository.findOneBy({ id, projectId });
+    const user = await this.userRepository.findOneBy({ id: sub });
     if (!user) {
       throw new UnauthorizedException('Usuario no encontrado');
     }

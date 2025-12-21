@@ -6,28 +6,36 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 import { User } from './entities/user.entity';
 import { VerificationCode } from './entities/verification-code.entity';
 import { PasswordReset } from './entities/password-reset.entity';
-import { RefreshToken } from './entities/refresh-token.entity';
 import { TokenBlacklist } from './entities/token-blacklist.entity';
 import { JwtModule } from '@nestjs/jwt';
 import { PassportModule } from '@nestjs/passport';
 import { JwtStrategy } from './strategies/jwt.strategies';
-import { GoogleStrategy } from './strategies/google.strategy';
 import { MailModule } from '@/mail/mail.module';
-import { Project } from '@/projects/entities/project.entity';
+import { BillingModule } from '@/billing/billing.module';
+import { App } from '@/apps/entities/app.entity';
+import { Subscription } from '@/billing/entities/subscription.entity';
+import { EmployeeAccess } from '@/billing/entities/employee-access.entity';
+import { IdentityDocument } from './entities/identity-document.entity';
+import { IdentityRecoveryToken } from './entities/identity-recovery-token.entity';
+import { AppKeyValidator } from '@/apps/app-key.validator';
 
 @Module({
   controllers: [AuthController],
-  providers: [AuthService, JwtStrategy, GoogleStrategy],
+  providers: [AuthService, JwtStrategy, AppKeyValidator],
   imports: [
     ConfigModule,
     MailModule,
+    BillingModule,
     TypeOrmModule.forFeature([
       User,
       VerificationCode,
       PasswordReset,
-      RefreshToken,
       TokenBlacklist,
-      Project,
+      App,
+      Subscription,
+      EmployeeAccess,
+      IdentityDocument,
+      IdentityRecoveryToken,
     ]),
     PassportModule.register({
       defaultStrategy: 'jwt',

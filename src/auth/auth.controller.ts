@@ -22,16 +22,14 @@ import { VerifyCodeDto } from './dto/verify-code.dto';
 import { ResendVerificationCodeDto } from './dto/resend-verification-code.dto';
 import { User, UserRole } from './entities/user.entity';
 import { JwtAuthGuard } from './guards/jwt-auth.guard';
-import { GoogleAuthGuard } from './guards/google-auth.guard';
 import { GetUser } from './decorators/get-user.decorators';
 import { Roles } from './decorators/roles.decorator';
 import { RolesGuard } from './guards/roles.guard';
 import { CreateEmployeeDto } from './dto/create-employee.dto';
 import { ForgotPasswordDto } from './dto/forgot-password.dto';
 import { ResetPasswordDto } from './dto/reset-password.dto';
-import { RefreshTokenDto } from './dto/refresh-token.dto';
-import { Verify2FALoginDto } from './dto/verify-2fa-login.dto';
-import { Verify2FADto } from './dto/verify-2fa.dto';
+import { RecoverByIdentityDto } from './dto/recover-by-identity.dto';
+import { RecoverConfirmDto } from './dto/recover-confirm.dto';
 
 @Controller('auth')
 export class AuthController {
@@ -54,7 +52,8 @@ export class AuthController {
     return this.authService.createUser({
       ...createUserDto,
       role: UserRole.EMPLOYEE,
-      projectId: owner.projectId,
+      ownerId: owner.id,
+      appKey: owner.appKey,
     });
   }
 
@@ -64,22 +63,6 @@ export class AuthController {
   @HttpCode(HttpStatus.OK)
   login(@Body() loginDto: LoginDto) {
     return this.authService.login(loginDto);
-  }
-
-  @Get('google')
-  @UseGuards(GoogleAuthGuard)
-  async googleAuth() {
-    // Este endpoint inicia el flujo de autenticación con Google
-    // El guard redirige automáticamente a Google
-  }
-
-  @Get('google/callback')
-  @UseGuards(GoogleAuthGuard)
-  async googleAuthCallback(@Req() req: any) {
-    // Este endpoint recibe el callback de Google
-    // req.user contiene los datos del usuario de Google
-    // El servicio generará automáticamente un projectId para nuevos usuarios
-    return this.authService.googleAuth(req.user);
   }
 
   // Rate limit: 3 intentos de verificación por minuto
@@ -143,9 +126,9 @@ export class AuthController {
   }
 
   @UseGuards(JwtAuthGuard)
-  @Get('get-employees/by-projects')
+  @Get('get-employees')
   getEmployees(@GetUser() user: User) {
-    return this.authService.getEmployeesByProject(user.projectId);
+    return this.authService.getEmployeesByOwner(user.id);
   }
 
   @UseGuards(JwtAuthGuard)
@@ -165,19 +148,7 @@ export class AuthController {
     @GetUser() owner: User,
     @Body() updateUserDto: UpdateUserDto,
   ) {
-    return this.authService.updateEmployee(
-      employeeId,
-      owner.projectId,
-      updateUserDto,
-    );
-  }
-
-  // ================= REFRESH TOKEN & LOGOUT =================
-
-  @Post('refresh')
-  @HttpCode(HttpStatus.OK)
-  refreshToken(@Body() refreshTokenDto: RefreshTokenDto) {
-    return this.authService.refreshTokens(refreshTokenDto.refreshToken);
+    return this.authService.updateEmployee(employeeId, owner, updateUserDto);
   }
 
   @UseGuards(JwtAuthGuard)
@@ -189,42 +160,26 @@ export class AuthController {
     return this.authService.logout(token, user.id);
   }
 
-  
+  // ================= Recuperación por identidad (security sensitive) ================
 
-  // ================= 2FA (Two-Factor Authentication) =================
-
-  // Completar login con código 2FA
-  @Throttle({ short: { limit: 5, ttl: 60000 } })
-  @Post('2fa/verify-login')
+  @Throttle({ long: { limit: 3, ttl: 3600000 } })
+  @Post('recover-by-identity')
   @HttpCode(HttpStatus.OK)
-  verify2FALogin(@Body() verify2FALoginDto: Verify2FALoginDto) {
-    return this.authService.verify2FALogin(
-      verify2FALoginDto.tempToken,
-      verify2FALoginDto.code,
-    );
+  recoverByIdentity(@Body() dto: RecoverByIdentityDto, @Req() req: any) {
+    return this.authService.recoverByIdentity(dto, this.getRequestMetadata(req));
   }
 
-  // Habilitar 2FA (generar QR code y códigos de recuperación)
-  @UseGuards(JwtAuthGuard)
-  @Post('2fa/enable')
+  @Throttle({ long: { limit: 3, ttl: 3600000 } })
+  @Post('recover-confirm')
   @HttpCode(HttpStatus.OK)
-  enable2FA(@GetUser() user: User) {
-    return this.authService.enable2FA(user.id);
+  recoverConfirm(@Body() dto: RecoverConfirmDto) {
+    return this.authService.recoverConfirm(dto);
   }
 
-  // Verificar código 2FA durante el setup (activar 2FA)
-  @UseGuards(JwtAuthGuard)
-  @Post('2fa/verify')
-  @HttpCode(HttpStatus.OK)
-  verify2FA(@GetUser() user: User, @Body() verify2FADto: Verify2FADto) {
-    return this.authService.verify2FA(user.id, verify2FADto.code);
-  }
-
-  // Deshabilitar 2FA
-  @UseGuards(JwtAuthGuard)
-  @Post('2fa/disable')
-  @HttpCode(HttpStatus.OK)
-  disable2FA(@GetUser() user: User, @Body() verify2FADto: Verify2FADto) {
-    return this.authService.disable2FA(user.id, verify2FADto.code);
+  private getRequestMetadata(req: any) {
+    return {
+      ip: req.ip || req.headers['x-forwarded-for'],
+      userAgent: req.headers['user-agent'],
+    };
   }
 }

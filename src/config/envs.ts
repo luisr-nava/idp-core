@@ -8,15 +8,10 @@ interface EnvVars {
   DB_NAME: string;
   JWT_SECRET: string;
   RESEND_API_KEY: string;
-  GOOGLE_CLIENT_ID: string;
-  GOOGLE_CLIENT_SECRET: string;
-  GOOGLE_REDIRECT_URI: string;
+  ALLOWED_APP_KEYS: string;
   FRONTEND_URL?: string;
-  SUBSCRIPTION_TEST_EMAILS?: string;
-  PROJECT_ADMIN_EMAILS?: string;
-  PROJECT_ADMIN_TOKEN?: string;
-  PAYMENT_WEBHOOK_SECRET?: string;
-  PAYMENT_WEBHOOK_HEADER?: string;
+  STRIPE_API_KEY?: string;
+  STRIPE_WEBHOOK_SECRET?: string;
 }
 
 const log = new Logger('EnvVars - ');
@@ -37,15 +32,13 @@ const envVarsSchema = joi
     RESEND_API_KEY: joi.string().pattern(/^re_/).required().messages({
       'string.pattern.base': 'RESEND_API_KEY debe comenzar con "re_"',
     }),
-    GOOGLE_CLIENT_ID: joi.string().min(20).required(),
-    GOOGLE_CLIENT_SECRET: joi.string().min(20).required(),
-    GOOGLE_REDIRECT_URI: joi.string().uri().required(),
+    ALLOWED_APP_KEYS: joi
+      .string()
+      .required()
+      .messages({ 'any.required': 'ALLOWED_APP_KEYS es obligatorio' }),
     FRONTEND_URL: joi.string().uri().optional(),
-    SUBSCRIPTION_TEST_EMAILS: joi.string().optional(),
-    PROJECT_ADMIN_EMAILS: joi.string().optional(),
-    PROJECT_ADMIN_TOKEN: joi.string().min(6).optional(),
-    PAYMENT_WEBHOOK_SECRET: joi.string().min(10).optional(),
-    PAYMENT_WEBHOOK_HEADER: joi.string().optional(),
+    STRIPE_API_KEY: joi.string().optional(),
+    STRIPE_WEBHOOK_SECRET: joi.string().optional(),
   })
   .unknown(true);
 
@@ -64,21 +57,10 @@ export const envs = {
   dbName: envVars.DB_NAME,
   jwtSecret: envVars.JWT_SECRET,
   resendApiKey: envVars.RESEND_API_KEY,
-  googleClientId: envVars.GOOGLE_CLIENT_ID,
-  googleClientSecret: envVars.GOOGLE_CLIENT_SECRET,
-  googleRedirectUri: envVars.GOOGLE_REDIRECT_URI,
+  allowedAppKeys: envVars.ALLOWED_APP_KEYS.split(',')
+    .map((key) => key.trim().toLowerCase())
+    .filter(Boolean),
   frontendUrl: envVars.FRONTEND_URL,
-  subscriptionTestEmails: envVars.SUBSCRIPTION_TEST_EMAILS
-    ? envVars.SUBSCRIPTION_TEST_EMAILS.split(',')
-        .map((email) => email.trim().toLowerCase())
-        .filter(Boolean)
-    : undefined,
-  projectAdminEmails: envVars.PROJECT_ADMIN_EMAILS
-    ? envVars.PROJECT_ADMIN_EMAILS.split(',')
-        .map((email) => email.trim().toLowerCase())
-        .filter(Boolean)
-    : undefined,
-  projectAdminToken: envVars.PROJECT_ADMIN_TOKEN,
-  paymentWebhookSecret: envVars.PAYMENT_WEBHOOK_SECRET,
-  paymentWebhookHeader: envVars.PAYMENT_WEBHOOK_HEADER || 'x-webhook-secret',
+  stripeApiKey: envVars.STRIPE_API_KEY,
+  stripeWebhookSecret: envVars.STRIPE_WEBHOOK_SECRET,
 };

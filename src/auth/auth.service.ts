@@ -7,10 +7,9 @@ import {
   BadRequestException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { SubscriptionType, User, UserRole } from './entities/user.entity';
+import { User, UserRole } from './entities/user.entity';
 import { VerificationCode } from './entities/verification-code.entity';
 import { PasswordReset } from './entities/password-reset.entity';
-import { RefreshToken } from './entities/refresh-token.entity';
 import { TokenBlacklist } from './entities/token-blacklist.entity';
 import { In, LessThan, Repository } from 'typeorm';
 import { CreateUserDto } from './dto/create-user.dto';
@@ -21,17 +20,22 @@ import { UpdateUserDto } from './dto/update-user.dto';
 import { UpdateProfileDto } from './dto/update-profile.dto';
 import { MailService } from '@/mail/mail.service';
 import { envs } from '@/config';
-import { v4 as uuidv4 } from 'uuid';
 import * as crypto from 'crypto';
-import { authenticator } from 'otplib';
-import * as QRCode from 'qrcode';
 import { Cron, CronExpression } from '@nestjs/schedule';
-import { Project } from '@/projects/entities/project.entity';
+import { SubscriptionService } from '@/billing/subscription.service';
+import {
+  SubscriptionPlan,
+  SubscriptionStatus,
+} from '@/billing/entities/subscription.entity';
+import {
+  DocumentType,
+  IdentityDocument,
+} from './entities/identity-document.entity';
+import { IdentityRecoveryToken } from './entities/identity-recovery-token.entity';
 
 @Injectable()
 export class AuthService {
   private readonly logger = new Logger(AuthService.name);
-  private readonly devProEmails = new Set(envs.subscriptionTestEmails || []);
 
   constructor(
     @InjectRepository(User)
@@ -40,72 +44,90 @@ export class AuthService {
     private readonly verificationCodeRepository: Repository<VerificationCode>,
     @InjectRepository(PasswordReset)
     private readonly passwordResetRepository: Repository<PasswordReset>,
-    @InjectRepository(RefreshToken)
-    private readonly refreshTokenRepository: Repository<RefreshToken>,
     @InjectRepository(TokenBlacklist)
-  private readonly tokenBlacklistRepository: Repository<TokenBlacklist>,
-  @InjectRepository(Project)
-  private readonly projectRepository: Repository<Project>,
-  private readonly jwtService: JwtService,
-  private readonly mailService: MailService,
+    private readonly tokenBlacklistRepository: Repository<TokenBlacklist>,
+    @InjectRepository(IdentityDocument)
+    private readonly identityDocumentRepository: Repository<IdentityDocument>,
+    @InjectRepository(IdentityRecoveryToken)
+    private readonly identityRecoveryTokenRepository: Repository<IdentityRecoveryToken>,
+    private readonly jwtService: JwtService,
+    private readonly mailService: MailService,
+    private readonly subscriptionService: SubscriptionService,
   ) {}
-  async createUser(createUserDto: CreateUserDto) {
+  async createUser(createUserDto: CreateUserDto & { ownerId?: string }) {
     const {
       password,
-      projectId,
       role: providedRole,
       stripeCustomerId,
+      ownerId,
+      appKey,
       ...user
     } = createUserDto;
     const role = providedRole || UserRole.EMPLOYEE;
+    const normalizedAppKey = this.subscriptionService.validateAppKey(appKey);
 
-    if (!projectId) {
-      throw new BadRequestException(
-        'El projectId es requerido para crear un usuario.',
-      );
-    }
-
-    const project = await this.ensureProjectExists(projectId);
-
-    // Validar que el email no exista (para OWNER, validar globalmente; para EMPLOYEE, validar por proyecto)
+    // Validar que el email no exista (OWNER global, EMPLOYEE global)
     if (role === UserRole.OWNER) {
-      await this.validateOwnerEmailUnique(user.email);
+      await this.validateOwnerEmailUnique(user.email, normalizedAppKey);
     } else {
-      await this.validateUserExistence(user.email, projectId);
+      if (!ownerId) {
+        throw new BadRequestException(
+          'ownerId es requerido para crear un empleado',
+        );
+      }
+      await this.validateOwnerEmailUnique(user.email, normalizedAppKey);
     }
 
     const newUser = this.authRepository.create({
       ...user,
       role,
-      projectId,
-      stripeCustomerId: stripeCustomerId ?? null,
-      subscriptionType: project.subscriptionType,
-      subscriptionExpiresAt: project.subscriptionExpiresAt,
+      ownerId: role === UserRole.EMPLOYEE ? ownerId ?? null : null,
+      appKey: normalizedAppKey,
+      stripeCustomerId: role === UserRole.OWNER ? stripeCustomerId ?? null : null,
       password: bcrypt.hashSync(password, 10),
     });
 
-    await this.authRepository.save(newUser);
+    const savedUser = await this.authRepository.save(newUser);
 
-    // Enviar email de verificación con el projectId
-    await this.createAndSendVerificationCode(
-      newUser.id,
-      newUser.email,
-      newUser.fullName,
-      project.name,
+    // Mantener compatibilidad: si se cargó DNI, lo registramos como identidad AR/DNI
+    await this.upsertIdentityDocument(
+      savedUser,
+      'AR',
+      DocumentType.DNI,
+      user.dni,
     );
+
+    // Enviar email de verificación
+    await this.createAndSendVerificationCode(
+      savedUser.id,
+      savedUser.email,
+      savedUser.fullName,
+      'tu cuenta',
+    );
+
+    if (role === UserRole.OWNER) {
+      await this.subscriptionService.getOrCreateFreeSubscription(
+        savedUser.id,
+        normalizedAppKey,
+        savedUser.stripeCustomerId,
+      );
+    }
 
     return {
       message:
         'Usuario creado correctamente. Se ha enviado un código de verificación a tu email',
-      projectId: newUser.projectId,
-      userId: newUser.id,
+      userId: savedUser.id,
     };
   }
 
   async login(loginDto: LoginDto) {
-    const { email, password } = loginDto;
+    const { email, password, appKey } = loginDto;
 
-    const user = await this.authRepository.findOneBy({ email });
+    const normalizedAppKey = this.subscriptionService.validateAppKey(appKey);
+
+    const user = await this.authRepository.findOne({
+      where: { email, appKey: normalizedAppKey },
+    });
 
     // Verificar si la cuenta está bloqueada
     if (user && user.lockUntil && new Date() < user.lockUntil) {
@@ -151,122 +173,40 @@ export class AuthService {
       );
     }
 
-    // Verificar si el usuario tiene 2FA habilitado
-    if (user.twoFactorEnabled) {
-      // Generar un token temporal para la verificación 2FA (válido por 5 minutos)
-      const tempToken = this.jwtService.sign(
-        {
-          id: user.id,
-          email: user.email,
-          temp2FA: true,
-        },
-        { expiresIn: '5m' },
-      );
-
-      this.logger.log(
-        `🔐 Login con 2FA pendiente: ${email} | UserId: ${user.id}`,
-      );
-
-      return {
-        requires2FA: true,
-        tempToken,
-        message: 'Ingresa el código de autenticación de dos factores',
-      };
-    }
-
     // Resetear intentos fallidos y actualizar último login
     await this.authRepository.update(user.id, {
       failedLoginAttempts: 0,
       lockUntil: undefined,
       lastLogin: new Date(),
     });
-    const project = await this.enforceSubscription(user);
-    if (project) {
-      user.subscriptionType = project.subscriptionType;
-      user.subscriptionExpiresAt = project.subscriptionExpiresAt;
-    }
+
+    const {
+      ownerId,
+      subscription,
+    } = await this.resolveSubscriptionContext(user, normalizedAppKey);
 
     const token = this.getJwtToken({
-      id: user.id,
+      userId: user.id,
       role: user.role,
-      projectId: user.projectId,
+      ownerId,
+      appKey: normalizedAppKey,
+      plan: subscription?.plan ?? SubscriptionPlan.FREE,
+      subscriptionStatus: subscription?.status ?? SubscriptionStatus.ACTIVE,
       email: user.email,
     });
 
-    // Generar refresh token
-    const refreshToken = await this.generateRefreshToken(user.id);
-
     // Logging de login exitoso
     this.logger.log(
-      `✅ Login exitoso: ${email} | UserId: ${user.id} | Rol: ${user.role}`,
+      `✅ Login exitoso: ${email} | UserId: ${user.id} | Rol: ${user.role} | App: ${normalizedAppKey}`,
     );
 
     return {
       token,
-      refreshToken,
       user: this.sanitizeUser(user),
-      projectId: user.projectId,
-    };
-  }
-
-  async googleAuth(googleUser: any) {
-    // Buscar si el usuario ya existe por email
-    let user = await this.authRepository.findOneBy({
-      email: googleUser.email,
-    });
-
-    // Si el usuario no existe, crearlo con nuevo proyecto y trial por proyecto
-    if (!user) {
-      const projectName = this.buildProjectNameFromUser(
-        googleUser.fullName,
-        googleUser.email,
-      );
-
-      const project = await this.projectRepository.save(
-        this.projectRepository.create({
-          name: projectName,
-          ...this.getProjectTrialSubscription(),
-        }),
-      );
-
-      const newUser = this.authRepository.create({
-        email: googleUser.email,
-        fullName: googleUser.fullName,
-        password: bcrypt.hashSync(crypto.randomBytes(32).toString('hex'), 10), // Password criptográficamente seguro
-        role: UserRole.OWNER,
-        projectId: project.uuid,
-        subscriptionType: project.subscriptionType,
-        subscriptionExpiresAt: project.subscriptionExpiresAt,
-        isVerify: true, // Usuarios de Google están verificados automáticamente
-        profileImage: googleUser.picture,
-      });
-
-      user = await this.authRepository.save(newUser);
-    } else {
-      // Si el usuario existe, actualizar isVerify a true si no lo estaba
-      if (!user.isVerify) {
-        await this.authRepository.update(user.id, { isVerify: true });
-        user.isVerify = true;
-      }
-    }
-
-    const project = await this.enforceSubscription(user);
-    if (project) {
-      user.subscriptionType = project.subscriptionType;
-      user.subscriptionExpiresAt = project.subscriptionExpiresAt;
-    }
-
-    const token = this.getJwtToken({
-      id: user.id,
-      role: user.role,
-      projectId: user.projectId,
-      email: user.email,
-    });
-
-    return {
-      token,
-      user: this.sanitizeUser(user),
-      projectId: user.projectId,
+      ownerId,
+      appKey: normalizedAppKey,
+      plan: subscription?.plan ?? SubscriptionPlan.FREE,
+      subscriptionStatus: subscription?.status ?? SubscriptionStatus.ACTIVE,
     };
   }
 
@@ -274,7 +214,6 @@ export class AuthService {
     // SEGURIDAD: Excluir campos sensibles que no deben ser actualizables directamente
     const {
       password,
-      projectId,
       role,
       isVerify,
       stripeCustomerId,
@@ -289,7 +228,7 @@ export class AuthService {
 
     // Evitar duplicado de email
     if (user.email && user.email !== existingUser.email) {
-      await this.validateUserExistence(user.email, existingUser.projectId);
+      await this.validateUserExistence(user.email, existingUser.appKey);
     }
 
     // Hashear password si viene
@@ -318,10 +257,10 @@ export class AuthService {
     return this.sanitizeUserForProfile(user);
   }
 
-  async getEmployeesByProject(projectId: string) {
+  async getEmployeesByOwner(ownerId: string) {
     const employees = await this.authRepository.find({
       where: {
-        projectId,
+        ownerId,
         role: In([UserRole.EMPLOYEE, UserRole.MANAGER]),
       },
       select: {
@@ -334,16 +273,13 @@ export class AuthService {
         address: true,
         salary: true,
         hireDate: true,
-        projectId: true,
         createdAt: true,
       },
       order: { createdAt: 'DESC' },
     });
 
     if (!employees.length) {
-      throw new NotFoundException(
-        'No se encontraron empleados para este proyecto',
-      );
+      throw new NotFoundException('No se encontraron empleados para este owner');
     }
 
     return employees;
@@ -351,12 +287,11 @@ export class AuthService {
 
   async updateEmployee(
     employeeId: string,
-    ownerProjectId: string,
+    owner: User,
     updateUserDto: UpdateUserDto,
   ) {
     // SEGURIDAD: Excluir campos sensibles
-    const { password, projectId, role, isVerify, ...updateData } =
-      updateUserDto;
+    const { password, role, isVerify, ...updateData } = updateUserDto;
 
     // Buscar el empleado
     const employee = await this.authRepository.findOneBy({ id: employeeId });
@@ -365,8 +300,8 @@ export class AuthService {
       throw new NotFoundException('Empleado no encontrado');
     }
 
-    // Validar que el empleado pertenezca al proyecto del owner
-    if (employee.projectId !== ownerProjectId) {
+    // Validar que el empleado pertenezca al owner
+    if (employee.ownerId !== owner.id) {
       throw new UnauthorizedException(
         'No tenés permisos para actualizar este empleado',
       );
@@ -381,7 +316,7 @@ export class AuthService {
 
     // Evitar duplicado de email si se está cambiando
     if (updateData.email && updateData.email !== employee.email) {
-      await this.validateUserExistence(updateData.email, ownerProjectId);
+      await this.validateUserExistence(updateData.email, employee.appKey);
     }
 
     // Preparar datos a actualizar
@@ -397,6 +332,15 @@ export class AuthService {
 
     // Actualizar empleado
     await this.authRepository.update(employeeId, dataToUpdate);
+
+    if (updateData.dni) {
+      await this.upsertIdentityDocument(
+        employee,
+        'AR',
+        DocumentType.DNI,
+        updateData.dni,
+      );
+    }
 
     return {
       success: true,
@@ -416,7 +360,7 @@ export class AuthService {
 
     // Evitar duplicado de email si se está cambiando
     if (updateData.email && updateData.email !== user.email) {
-      await this.validateUserExistence(updateData.email, user.projectId);
+      await this.validateUserExistence(updateData.email, user.appKey);
     }
 
     // Preparar datos a actualizar
@@ -433,6 +377,15 @@ export class AuthService {
 
     // Actualizar usuario
     await this.authRepository.update(userId, dataToUpdate);
+
+    if (updateData.dni) {
+      await this.upsertIdentityDocument(
+        user,
+        'AR',
+        DocumentType.DNI,
+        updateData.dni,
+      );
+    }
 
     // Logging de actualización de perfil
     this.logger.log(`📝 Perfil actualizado: ${user.email} | UserId: ${userId}`);
@@ -506,12 +459,11 @@ export class AuthService {
     }
 
     // Reenviar el código de verificación (elimina el antiguo y crea uno nuevo)
-    const project = await this.ensureProjectExists(user.projectId);
     await this.createAndSendVerificationCode(
       user.id,
       user.email,
       user.fullName,
-      project.name,
+      'tu cuenta',
     );
 
     return {
@@ -565,14 +517,12 @@ export class AuthService {
     // Construir el link de reset con el token original (este se envía al usuario)
     const resetLink = `${envs.frontendUrl || 'http://localhost:3000'}/reset-password?token=${resetToken}`;
 
-    const project = await this.ensureProjectExists(user.projectId);
-
     // Enviar email con el link de reset
     await this.mailService.sendPasswordResetEmail(
       user.email,
       resetLink,
       user.fullName,
-      project.name,
+      'tu cuenta',
     );
 
     return {
@@ -629,11 +579,168 @@ export class AuthService {
     };
   }
 
+  // ==================== RECUPERACIÓN POR IDENTIDAD (security sensitive) ====================
+
+  async recoverByIdentity(
+    dto: {
+      countryCode: string;
+      documentType: DocumentType;
+      documentNumber: string;
+    },
+    meta?: { ip?: string; userAgent?: string },
+  ) {
+    // Security-sensitive: evita enumeración devolviendo respuesta genérica
+    const countryCode = this.normalizeCountryCode(dto.countryCode);
+    const normalizedNumber = this.normalizeDocumentNumber(dto.documentNumber);
+    const numberHash = this.hashDocumentNumber(normalizedNumber);
+
+    const identity = await this.identityDocumentRepository.findOne({
+      where: {
+        countryCode,
+        documentType: dto.documentType,
+        documentNumber: numberHash,
+      },
+    });
+
+    if (!identity) {
+      this.logger.warn(
+        `🔎 Recuperación por identidad sin match (${countryCode}/${dto.documentType})`,
+      );
+      return {
+        success: true,
+        message: 'Si los datos son correctos, recibirás instrucciones en tu email',
+      };
+    }
+
+    const user = await this.authRepository.findOne({
+      where: { id: identity.userId },
+    });
+
+    if (!user) {
+      this.logger.warn(
+        `🔎 Recuperación por identidad: usuario no encontrado para doc ${identity.id}`,
+      );
+      return {
+        success: true,
+        message: 'Si los datos son correctos, recibirás instrucciones en tu email',
+      };
+    }
+
+    // Invalidar tokens previos
+    await this.identityRecoveryTokenRepository.update(
+      { userId: user.id, isUsed: false },
+      { isUsed: true, usedAt: new Date() },
+    );
+
+    const rawToken = crypto.randomBytes(48).toString('hex');
+    const tokenHash = this.hashToken(rawToken);
+    const expiresAt = new Date(Date.now() + 15 * 60 * 1000);
+
+    const recoveryToken = this.identityRecoveryTokenRepository.create({
+      userId: user.id,
+      tokenHash,
+      expiresAt,
+      requestIp: meta?.ip,
+      requestUserAgent: meta?.userAgent,
+    });
+
+    await this.identityRecoveryTokenRepository.save(recoveryToken);
+
+    const recoveryLink = `${envs.frontendUrl || 'http://localhost:3000'}/recover-confirm?token=${rawToken}`;
+
+    await this.mailService.sendIdentityRecoveryEmail(
+      user.email,
+      recoveryLink,
+      user.fullName,
+      'tu cuenta',
+    );
+
+    this.logger.warn(
+      `🛡️ Recuperación por identidad iniciada para user ${user.id} (${countryCode}/${dto.documentType})`,
+    );
+
+    return {
+      success: true,
+      message: 'Si los datos son correctos, recibirás instrucciones en tu email',
+    };
+  }
+
+  async recoverConfirm(dto: {
+    token: string;
+    newEmail?: string;
+    newPassword?: string;
+  }) {
+    if (!dto.newEmail && !dto.newPassword) {
+      throw new BadRequestException(
+        'Debes proporcionar un nuevo email o una nueva contraseña',
+      );
+    }
+
+    const tokenHash = this.hashToken(dto.token);
+
+    const recovery = await this.identityRecoveryTokenRepository.findOne({
+      where: { tokenHash, isUsed: false },
+    });
+
+    if (!recovery || recovery.expiresAt < new Date()) {
+      throw new UnauthorizedException('Token inválido o expirado');
+    }
+
+    const user = await this.authRepository.findOne({
+      where: { id: recovery.userId },
+    });
+
+    if (!user) {
+      throw new UnauthorizedException('Token inválido o expirado');
+    }
+
+    const updates: Partial<User> = {};
+    let emailChanged = false;
+
+    if (dto.newEmail && dto.newEmail !== user.email) {
+      await this.validateOwnerEmailUnique(dto.newEmail, user.appKey);
+      updates.email = dto.newEmail;
+      updates.isVerify = false;
+      emailChanged = true;
+    }
+
+    if (dto.newPassword) {
+      updates.password = await bcrypt.hash(dto.newPassword, 10);
+    }
+
+    if (Object.keys(updates).length > 0) {
+      await this.authRepository.update(user.id, updates);
+    }
+
+    await this.identityRecoveryTokenRepository.update(recovery.id, {
+      isUsed: true,
+      usedAt: new Date(),
+    });
+
+    if (emailChanged && dto.newEmail) {
+      await this.createAndSendVerificationCode(
+        user.id,
+        dto.newEmail,
+        user.fullName,
+        'tu cuenta',
+      );
+    }
+
+    this.logger.log(
+      `✅ Recuperación por identidad confirmada para user ${user.id} (email cambiado: ${emailChanged})`,
+    );
+
+    return {
+      success: true,
+      message: 'Datos actualizados. Revisa tu email para continuar',
+    };
+  }
+
   private async createAndSendVerificationCode(
     userId: string,
     email: string,
     fullName: string,
-    projectName: string,
+    contextName: string,
   ) {
     // Eliminar códigos antiguos del usuario antes de crear uno nuevo
     await this.verificationCodeRepository.delete({ userId });
@@ -649,151 +756,126 @@ export class AuthService {
 
     await this.verificationCodeRepository.save(verificationCode);
 
-    // Enviar el email con el código y el projectId
-    await this.mailService.sendVerificationEmail(email, code, fullName, projectName);
+    // Enviar el email con el código
+    await this.mailService.sendVerificationEmail(email, code, fullName, contextName);
   }
 
   private async validateUserExistence(
     email: string,
-    projectId: string,
+    appKey: string,
   ): Promise<void> {
-    const userExist = await this.authRepository.findOneBy({
-      email,
-      projectId,
+    const userExist = await this.authRepository.findOne({
+      where: { email, appKey },
     });
     if (userExist) {
       throw new ConflictException(
-        `El usuario con email: ${email} ya existe en este proyecto.`,
+        `El usuario con email: ${email} ya existe en esta app.`,
       );
     }
   }
 
-  private async ensureProjectExists(projectId: string): Promise<Project> {
-    const project = await this.projectRepository.findOne({
-      where: { uuid: projectId },
+  private async validateOwnerEmailUnique(email: string, appKey: string): Promise<void> {
+    const userExist = await this.authRepository.findOne({
+      where: { email, appKey },
     });
-
-    if (!project) {
-      throw new BadRequestException(
-        `El proyecto con id ${projectId} no existe. Crea el proyecto antes de agregar usuarios.`,
-      );
-    }
-
-    return project;
-  }
-
-  private getProjectTrialSubscription(): {
-    subscriptionType: SubscriptionType;
-    subscriptionExpiresAt: Date;
-  } {
-    const trialDays = 15;
-    return {
-      subscriptionType: SubscriptionType.PRO,
-      subscriptionExpiresAt: new Date(
-        Date.now() + trialDays * 24 * 60 * 60 * 1000,
-      ),
-    };
-  }
-
-  private async enforceSubscription(user: User): Promise<Project | null> {
-    const project = await this.projectRepository.findOne({
-      where: { uuid: user.projectId },
-    });
-
-    if (!project) {
-      this.logger.warn(
-        `⚠️ Proyecto no encontrado para usuario ${user.email} | ProjectId: ${user.projectId}`,
-      );
-      return null;
-    }
-
-    if (this.isDevProEmail(user.email)) {
-      if (
-        project.subscriptionType !== SubscriptionType.PRO ||
-        project.subscriptionExpiresAt !== null
-      ) {
-        await this.projectRepository.update(
-          { uuid: project.uuid },
-          {
-            subscriptionType: SubscriptionType.PRO,
-            subscriptionExpiresAt: null,
-          },
-        );
-
-        project.subscriptionType = SubscriptionType.PRO;
-        project.subscriptionExpiresAt = null;
-
-        this.logger.log(
-          `🧪 PRO de prueba aplicado al proyecto ${project.name} por email autorizado: ${user.email}`,
-        );
-      }
-      return project;
-    }
-
-    if (
-      project.subscriptionType !== SubscriptionType.FREE &&
-      project.subscriptionExpiresAt &&
-      project.subscriptionExpiresAt.getTime() < Date.now()
-    ) {
-      await this.projectRepository.update(
-        { uuid: project.uuid },
-        {
-          subscriptionType: SubscriptionType.FREE,
-          subscriptionExpiresAt: null,
-        },
-      );
-
-      project.subscriptionType = SubscriptionType.FREE;
-      project.subscriptionExpiresAt = null;
-
-      this.logger.log(
-        `ℹ️ Suscripción del proyecto ${project.name} expirada. Ahora es FREE | ProjectId: ${project.uuid}`,
-      );
-    }
-
-    return project;
-  }
-
-  private isDevProEmail(email: string): boolean {
-    return this.devProEmails.has(email.toLowerCase());
-  }
-
-  private buildProjectNameFromUser(
-    fullName: string | undefined,
-    email: string,
-  ): string {
-    const base = (fullName || email || 'project')
-      .toString()
-      .trim()
-      .replace(/\s+/g, '-')
-      .slice(0, 40);
-    const suffix = uuidv4().slice(0, 6);
-    return `${base || 'project'}-${suffix}`;
-  }
-
-  private async validateOwnerEmailUnique(email: string): Promise<void> {
-    const userExist = await this.authRepository.findOneBy({ email });
     if (userExist) {
-      throw new ConflictException(`El email ${email} ya está registrado.`);
+      throw new ConflictException(`El email ${email} ya está registrado en esta app.`);
     }
   }
 
   private getJwtToken(payload: {
-    id: string;
-    role: string;
-    projectId: string;
+    userId: string;
+    role: UserRole;
+    ownerId?: string | null;
+    appKey: string;
+    plan: SubscriptionPlan;
+    subscriptionStatus: SubscriptionStatus;
     email: string;
   }) {
-    const token = this.jwtService.sign(payload, {
-      secret: envs.jwtSecret,
-      expiresIn: '1d',
-    });
+    const token = this.jwtService.sign(
+      {
+        sub: payload.userId,
+        role: payload.role,
+        ownerId: payload.ownerId ?? null,
+        appKey: payload.appKey,
+        plan: payload.plan,
+        subscriptionStatus: payload.subscriptionStatus,
+        email: payload.email,
+      },
+      {
+        secret: envs.jwtSecret,
+        expiresIn: '1d',
+      },
+    );
     return token;
   }
 
+  private async upsertIdentityDocument(
+    user: User,
+    countryCode: string,
+    documentType: DocumentType,
+    documentNumber?: string | null,
+  ) {
+    if (!documentNumber) return;
+
+    const normalizedCode = this.normalizeCountryCode(countryCode);
+    const normalizedNumber = this.normalizeDocumentNumber(documentNumber);
+    const numberHash = this.hashDocumentNumber(normalizedNumber);
+
+    const existing = await this.identityDocumentRepository.findOne({
+      where: {
+        countryCode: normalizedCode,
+        documentType,
+        documentNumber: numberHash,
+      },
+    });
+
+    if (existing && existing.userId !== user.id) {
+      throw new ConflictException('El documento ya está asociado a otro usuario');
+    }
+
+    const userDoc = await this.identityDocumentRepository.findOne({
+      where: { userId: user.id, countryCode: normalizedCode, documentType },
+    });
+
+    if (userDoc) {
+      userDoc.documentNumber = numberHash;
+      await this.identityDocumentRepository.save(userDoc);
+      return;
+    }
+
+    const identity = this.identityDocumentRepository.create({
+      userId: user.id,
+      countryCode: normalizedCode,
+      documentType,
+      documentNumber: numberHash,
+    });
+
+    await this.identityDocumentRepository.save(identity);
+  }
+
+  private normalizeCountryCode(code: string): string {
+    return code.trim().toUpperCase();
+  }
+
+  private normalizeDocumentNumber(documentNumber: string): string {
+    const normalized = documentNumber.replace(/[^a-zA-Z0-9]/g, '').toUpperCase();
+    if (!normalized) {
+      throw new BadRequestException('documentNumber no puede quedar vacío');
+    }
+    return normalized;
+  }
+
+  private hashDocumentNumber(normalizedDocument: string): string {
+    return crypto.createHash('sha256').update(normalizedDocument).digest('hex');
+  }
+
+  private hashToken(token: string): string {
+    return crypto.createHash('sha256').update(token).digest('hex');
+  }
+
   private sanitizeUser(user: User) {
-    const { password, createdAt, updatedAt, dni, projectId, ...safeUser } =
-      user;
+    const { password, createdAt, updatedAt, dni, ...safeUser } = user;
 
     const cleanedUser = Object.fromEntries(
       Object.entries(safeUser).filter(([_, v]) => v != null),
@@ -803,8 +885,49 @@ export class AuthService {
   }
 
   private sanitizeUserForProfile(user: User) {
-    const { password, projectId, ...rest } = user;
+    const { password, ...rest } = user;
     return rest;
+  }
+
+  private async resolveSubscriptionContext(user: User, appKey: string) {
+    const owner = await this.resolveOwner(user);
+    await this.subscriptionService.ensureApp(appKey);
+
+    if (user.role !== UserRole.OWNER) {
+      const allowed = await this.subscriptionService.validateEmployeeAccess(
+        user.id,
+        owner.id,
+        appKey,
+      );
+      if (!allowed) {
+        throw new UnauthorizedException('No tienes acceso a esta app');
+      }
+    }
+
+    const subscription =
+      (await this.subscriptionService.findByOwnerAndApp(owner.id, appKey)) ||
+      (await this.subscriptionService.getOrCreateFreeSubscription(
+        owner.id,
+        appKey,
+        owner.stripeCustomerId,
+      ));
+
+    return { ownerId: owner.id, subscription };
+  }
+
+  private async resolveOwner(user: User): Promise<User> {
+    if (user.role === UserRole.OWNER) {
+      return user;
+    }
+
+    if (user.ownerId) {
+      const owner = await this.authRepository.findOne({
+        where: { id: user.ownerId, role: UserRole.OWNER },
+      });
+      if (owner) return owner;
+    }
+
+    throw new UnauthorizedException('Empleado sin OWNER asociado');
   }
 
   private getClientInfo(): string {
@@ -841,72 +964,6 @@ export class AuthService {
     }
   }
 
-  // ==================== REFRESH TOKENS ====================
-
-  private async generateRefreshToken(userId: string): Promise<string> {
-    const token = crypto.randomBytes(64).toString('hex');
-
-    const refreshToken = this.refreshTokenRepository.create({
-      userId,
-      token,
-      expiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000), // 30 días
-    });
-
-    await this.refreshTokenRepository.save(refreshToken);
-
-    return token;
-  }
-
-  async refreshTokens(oldRefreshToken: string) {
-    // Buscar el refresh token
-    const refreshToken = await this.refreshTokenRepository.findOne({
-      where: { token: oldRefreshToken, isRevoked: false },
-    });
-
-    if (!refreshToken) {
-      throw new UnauthorizedException('Refresh token inválido');
-    }
-
-    // Verificar si expiró
-    if (new Date() > refreshToken.expiresAt) {
-      throw new UnauthorizedException('Refresh token expirado');
-    }
-
-    // Buscar el usuario
-    const user = await this.authRepository.findOneBy({
-      id: refreshToken.userId,
-    });
-
-    if (!user) {
-      throw new UnauthorizedException('Usuario no encontrado');
-    }
-
-    // Revocar el refresh token anterior (rotación)
-    const newRefreshToken = await this.generateRefreshToken(user.id);
-
-    await this.refreshTokenRepository.update(refreshToken.id, {
-      isRevoked: true,
-      replacedByToken: newRefreshToken,
-    });
-
-    // Generar nuevo access token
-    const accessToken = this.getJwtToken({
-      id: user.id,
-      role: user.role,
-      projectId: user.projectId,
-      email: user.email,
-    });
-
-    this.logger.log(
-      `🔄 Tokens refrescados: ${user.email} | UserId: ${user.id}`,
-    );
-
-    return {
-      accessToken,
-      refreshToken: newRefreshToken,
-    };
-  }
-
   // ==================== JWT BLACKLIST ====================
 
   async logout(token: string, userId: string) {
@@ -928,12 +985,6 @@ export class AuthService {
     });
 
     await this.tokenBlacklistRepository.save(blacklistedToken);
-
-    // Revocar todos los refresh tokens del usuario
-    await this.refreshTokenRepository.update(
-      { userId, isRevoked: false },
-      { isRevoked: true },
-    );
 
     this.logger.log(`👋 Logout exitoso: UserId: ${userId}`);
 
@@ -962,225 +1013,5 @@ export class AuthService {
     this.logger.log(
       `🧹 Tokens expirados eliminados de blacklist: ${deleted.affected || 0}`,
     );
-  }
-
-  // Limpieza automática de refresh tokens expirados
-  // Ejecutar limpieza diaria a las 3:30 AM
-  @Cron('30 3 * * *')
-  async cleanupExpiredRefreshTokens() {
-    const deleted = await this.refreshTokenRepository.delete({
-      expiresAt: LessThan(new Date()),
-    });
-
-    this.logger.log(
-      `🧹 Refresh tokens expirados eliminados: ${deleted.affected || 0}`,
-    );
-  }
-
-  // ==================== TWO-FACTOR AUTHENTICATION ====================
-
-  async enable2FA(userId: string) {
-    const user = await this.authRepository.findOneBy({ id: userId });
-
-    if (!user) {
-      throw new NotFoundException('Usuario no encontrado');
-    }
-
-    if (user.twoFactorEnabled) {
-      throw new BadRequestException('2FA ya está habilitado');
-    }
-
-    // Generar secret
-    const secret = authenticator.generateSecret();
-
-    // Generar códigos de recuperación (8 códigos de 8 caracteres)
-    const recoveryCodes = Array.from({ length: 8 }, () =>
-      crypto.randomBytes(4).toString('hex').toUpperCase(),
-    );
-
-    // Guardar secret y recovery codes
-    await this.authRepository.update(userId, {
-      twoFactorSecret: secret,
-      twoFactorRecoveryCodes: recoveryCodes,
-    });
-
-    // Generar QR code
-    const otpauthUrl = authenticator.keyuri(user.email, 'IDP-Core', secret);
-
-    const qrCodeDataUrl = await QRCode.toDataURL(otpauthUrl);
-
-    this.logger.log(
-      `🔐 2FA habilitado para: ${user.email} | UserId: ${userId}`,
-    );
-
-    return {
-      secret,
-      qrCode: qrCodeDataUrl,
-      recoveryCodes,
-      message:
-        'Escanea el código QR con tu app de autenticación (Google Authenticator, Authy, etc.)',
-    };
-  }
-
-  async verify2FA(userId: string, token: string) {
-    const user = await this.authRepository.findOneBy({ id: userId });
-
-    if (!user || !user.twoFactorSecret) {
-      throw new BadRequestException('2FA no está configurado');
-    }
-
-    const isValid = authenticator.verify({
-      token,
-      secret: user.twoFactorSecret,
-    });
-
-    if (!isValid) {
-      // Verificar si es un código de recuperación
-      if (user.twoFactorRecoveryCodes?.includes(token)) {
-        // Remover el código de recuperación usado
-        const updatedCodes = user.twoFactorRecoveryCodes.filter(
-          (code) => code !== token,
-        );
-
-        await this.authRepository.update(userId, {
-          twoFactorRecoveryCodes: updatedCodes,
-        });
-
-        this.logger.warn(
-          `⚠️ Código de recuperación usado: ${user.email} | Quedan ${updatedCodes.length} códigos`,
-        );
-
-        return { valid: true, recoveryCodeUsed: true };
-      }
-
-      throw new UnauthorizedException('Código 2FA inválido');
-    }
-
-    // Activar 2FA si es la primera verificación
-    if (!user.twoFactorEnabled) {
-      await this.authRepository.update(userId, {
-        twoFactorEnabled: true,
-      });
-
-      this.logger.log(
-        `✅ 2FA activado y verificado: ${user.email} | UserId: ${userId}`,
-      );
-    }
-
-    return { valid: true, recoveryCodeUsed: false };
-  }
-
-  async disable2FA(userId: string, token: string) {
-    const user = await this.authRepository.findOneBy({ id: userId });
-
-    if (!user || !user.twoFactorEnabled) {
-      throw new BadRequestException('2FA no está habilitado');
-    }
-
-    // Verificar el código antes de deshabilitar
-    const isValid = authenticator.verify({
-      token,
-      secret: user.twoFactorSecret || '',
-    });
-
-    if (!isValid) {
-      throw new UnauthorizedException(
-        'Código 2FA inválido. No se puede deshabilitar.',
-      );
-    }
-
-    // Deshabilitar 2FA
-    await this.authRepository.update(userId, {
-      twoFactorEnabled: false,
-      twoFactorSecret: undefined,
-      twoFactorRecoveryCodes: undefined,
-    });
-
-    this.logger.warn(`🔓 2FA deshabilitado: ${user.email} | UserId: ${userId}`);
-
-    return {
-      success: true,
-      message: '2FA deshabilitado correctamente',
-    };
-  }
-
-  async verify2FALogin(tempToken: string, code: string) {
-    // Decodificar y validar el token temporal
-    let decoded: any;
-    try {
-      decoded = this.jwtService.verify(tempToken);
-    } catch (error) {
-      throw new UnauthorizedException(
-        'Token temporal inválido o expirado. Inicia sesión nuevamente.',
-      );
-    }
-
-    // Verificar que sea un token temporal de 2FA
-    if (!decoded.temp2FA) {
-      throw new UnauthorizedException('Token inválido');
-    }
-
-    const user = await this.authRepository.findOneBy({ id: decoded.id });
-
-    if (!user || !user.twoFactorEnabled || !user.twoFactorSecret) {
-      throw new BadRequestException('2FA no está configurado correctamente');
-    }
-
-    // Verificar el código 2FA
-    const isValid = authenticator.verify({
-      token: code,
-      secret: user.twoFactorSecret,
-    });
-
-    if (!isValid) {
-      // Verificar si es un código de recuperación
-      if (user.twoFactorRecoveryCodes?.includes(code)) {
-        // Remover el código de recuperación usado
-        const updatedCodes = user.twoFactorRecoveryCodes.filter(
-          (recoveryCode) => recoveryCode !== code,
-        );
-
-        await this.authRepository.update(user.id, {
-          twoFactorRecoveryCodes: updatedCodes,
-        });
-
-        this.logger.warn(
-          `⚠️ Código de recuperación usado en login: ${user.email} | Quedan ${updatedCodes.length} códigos`,
-        );
-      } else {
-        this.logger.warn(
-          `🚫 Código 2FA inválido en login: ${user.email} | UserId: ${user.id}`,
-        );
-        throw new UnauthorizedException('Código 2FA inválido');
-      }
-    }
-
-    // Actualizar último login y resetear intentos fallidos
-    await this.authRepository.update(user.id, {
-      failedLoginAttempts: 0,
-      lockUntil: undefined,
-      lastLogin: new Date(),
-    });
-
-    // Generar tokens definitivos
-    const token = this.getJwtToken({
-      id: user.id,
-      role: user.role,
-      projectId: user.projectId,
-      email: user.email,
-    });
-
-    const refreshToken = await this.generateRefreshToken(user.id);
-
-    this.logger.log(
-      `✅ Login 2FA completado: ${user.email} | UserId: ${user.id} | Rol: ${user.role}`,
-    );
-
-    return {
-      token,
-      refreshToken,
-      user: this.sanitizeUser(user),
-      projectId: user.projectId,
-    };
   }
 }

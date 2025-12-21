@@ -7,17 +7,12 @@ import {
   UpdateDateColumn,
 } from 'typeorm';
 
-export enum SubscriptionType {
-  FREE = 'FREE',
-  PREMIUM = 'PREMIUM',
-  PRO = 'PRO',
-}
-
 export enum UserRole {
   OWNER = 'OWNER',
   MANAGER = 'MANAGER',
   EMPLOYEE = 'EMPLOYEE',
 }
+@Index(['email', 'appKey'], { unique: true })
 @Entity('user')
 export class User {
   @PrimaryGeneratedColumn('uuid')
@@ -26,9 +21,12 @@ export class User {
   @Column()
   fullName: string;
 
-  @Column({ unique: true })
-  @Index('idx_user_email', { unique: true })
+  @Column()
   email: string;
+
+  @Column({ type: 'varchar' })
+  @Index('idx_user_email_app', { unique: true, where: 'email IS NOT NULL' })
+  appKey: string;
 
   @Column()
   password: string;
@@ -39,6 +37,9 @@ export class User {
     default: UserRole.EMPLOYEE,
   })
   role: UserRole;
+
+  @Column({ type: 'uuid', nullable: true })
+  ownerId?: string | null;
 
   @Column({ default: false })
   isVerify: boolean;
@@ -76,35 +77,12 @@ export class User {
   @Column({ type: 'timestamp', nullable: true })
   lockUntil?: Date;
 
-  // Campos para 2FA
-  @Column({ default: false })
-  twoFactorEnabled: boolean;
-
-  @Column({ type: 'varchar', nullable: true })
-  twoFactorSecret?: string;
-
-  @Column({ type: 'simple-json', nullable: true })
-  twoFactorRecoveryCodes?: string[];
-
   @CreateDateColumn()
   createdAt: Date;
 
   @UpdateDateColumn()
   updatedAt: Date;
 
-  @Column()
-  projectId: string;
-
-  @Column({
-    type: 'enum',
-    enum: SubscriptionType,
-    default: SubscriptionType.FREE,
-  })
-  subscriptionType: SubscriptionType;
-
-  @Column({ type: 'timestamp', nullable: true })
-  subscriptionExpiresAt?: Date | null;
-  
   @Column({ type: 'varchar', nullable: true })
   stripeCustomerId: string | null;
 }

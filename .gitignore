@@ -55,14 +55,9 @@ pids
 # Diagnostic reports (https://nodejs.org/api/report.html)
 report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
 .dockerignore
-.claude
-nul
 
-FRONTEND_GUIDE.md
 
-MICROSERVICES_GUIDE.md
 
-NESTJS_INTEGRATION.md
+AUTH_SERVICE_DETAILS.md
 
-SECURITY.md
-DEPLOY-DOCKER.md
+AUTH_API.md

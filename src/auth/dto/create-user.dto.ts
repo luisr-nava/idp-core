@@ -6,7 +6,6 @@ import {
   IsNotEmpty,
   IsOptional,
   IsString,
-  IsUUID,
   Length,
   Matches,
   MinLength,
@@ -106,13 +105,8 @@ export class CreateUserDto {
   emergencyContact?: string;
 
   @IsString()
-  @IsNotEmpty({
-    message: 'El projectId es requerido',
-  })
-  @IsUUID(4, {
-    message: 'El projectId debe ser un UUID válido',
-  })
-  projectId: string;
+  @IsNotEmpty()
+  appKey: string;
 
   @IsOptional()
   @IsBoolean()

@@ -87,7 +87,7 @@ Este proyecto incluye documentación completa para diferentes casos de uso:
 ### Para el Equipo Backend/DevOps
 - **[SECURITY.md](./SECURITY.md)** - Guía completa de seguridad
   - Características de seguridad implementadas
-  - Refresh Tokens, JWT Blacklist, 2FA
+  - JWT Blacklist y protección de endpoints
   - Configuración de Cron Jobs
   - Endpoints API completos
   - Mantenimiento y monitoreo
@@ -96,9 +96,9 @@ Este proyecto incluye documentación completa para diferentes casos de uso:
 ### Para Desarrolladores Frontend
 - **[FRONTEND_GUIDE.md](./FRONTEND_GUIDE.md)** - Integración con aplicaciones Frontend
   - Configuración de Axios con interceptores
-  - Manejo de tokens (access + refresh)
-  - Hooks de React (useAuth, use2FA)
-  - Componentes completos (Login, Register, 2FA)
+  - Manejo de tokens (access)
+  - Hooks de React (useAuth)
+  - Componentes completos (Login, Register)
   - Ejemplos de código listo para usar
   - Mejores prácticas de seguridad
 
@@ -135,9 +135,7 @@ Este proyecto incluye documentación completa para diferentes casos de uso:
 ## 🔐 Características de Seguridad
 
 - ✅ **JWT Access Tokens**: 15 minutos de duración
-- ✅ **Refresh Tokens**: 30 días con rotación automática
 - ✅ **JWT Blacklist**: Logout real con invalidación de tokens
-- ✅ **2FA (TOTP)**: Autenticación de dos factores con Google Authenticator
 - ✅ **Rate Limiting**: Protección contra fuerza bruta
 - ✅ **CORS**: Lista blanca de orígenes
 - ✅ **Helmet**: Headers de seguridad (CSP, HSTS, etc.)

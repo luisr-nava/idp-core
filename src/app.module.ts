@@ -6,7 +6,7 @@ import { ScheduleModule } from '@nestjs/schedule';
 import { APP_GUARD } from '@nestjs/core';
 import { typeORMConfig } from './config';
 import { AuthModule } from '@/auth/auth.module';
-import { ProjectsModule } from '@/projects/projects.module';
+import { BillingModule } from '@/billing/billing.module';
 
 @Module({
   imports: [
@@ -35,7 +35,7 @@ import { ProjectsModule } from '@/projects/projects.module';
       },
     ]),
     AuthModule,
-    ProjectsModule,
+    BillingModule,
   ],
   controllers: [],
   providers: [
