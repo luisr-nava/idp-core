@@ -25,7 +25,6 @@ export class User {
   email: string;
 
   @Column({ type: 'varchar' })
-  @Index('idx_user_email_app', { unique: true, where: 'email IS NOT NULL' })
   appKey: string;
 
   @Column()

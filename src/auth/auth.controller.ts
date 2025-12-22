@@ -49,6 +49,10 @@ export class AuthController {
     @GetUser() owner: User,
     @Body() createUserDto: CreateEmployeeDto,
   ) {
+    if (owner.role !== UserRole.OWNER) {
+      throw new ForbiddenException('Solo un OWNER puede crear usuarios');
+    }
+
     return this.authService.createUser({
       ...createUserDto,
       role: UserRole.EMPLOYEE,
