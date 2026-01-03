@@ -33,7 +33,6 @@ export class User {
   @Column({
     type: 'enum',
     enum: UserRole,
-    default: UserRole.EMPLOYEE,
   })
   role: UserRole;
 
@@ -52,11 +51,11 @@ export class User {
   @Column({ nullable: true })
   address?: string;
 
-  @Column({ nullable: true })
-  hireDate?: string;
+  @Column({ type: 'date', nullable: true })
+  hireDate?: Date;
 
   @Column({ nullable: true })
-  salary?: string;
+  salary?: number;
 
   @Column({ nullable: true })
   notes?: string;

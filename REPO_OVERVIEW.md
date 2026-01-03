@@ -35,6 +35,7 @@ El servicio se expone en `http://localhost:3001/api/v1`.
 
 ## 🔑 Configuración mínima (env)
 - `ALLOWED_APP_KEYS` (obligatorio, coma-separated, lowercase) → ej: `tuapp,backoffice`
+- `DEFAULT_APP_KEY` (opcional) → si tu entorno (por ejemplo `URL_BALANZIO`) siempre usa la misma app, el backend usará ese `appKey` si no llega en la request.
 - Stripe: `STRIPE_API_KEY`, `STRIPE_WEBHOOK_SECRET`
 - JWT: `JWT_SECRET`, `ISSUER`
 - DB: `DB_HOST`, `DB_PORT`, `DB_USER`, `DB_PASSWORD`, `DB_NAME`

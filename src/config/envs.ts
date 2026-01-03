@@ -9,6 +9,7 @@ interface EnvVars {
   JWT_SECRET: string;
   RESEND_API_KEY: string;
   ALLOWED_APP_KEYS: string;
+  DEFAULT_APP_KEY?: string;
   FRONTEND_URL?: string;
   STRIPE_API_KEY?: string;
   STRIPE_WEBHOOK_SECRET?: string;
@@ -36,6 +37,7 @@ const envVarsSchema = joi
       .string()
       .required()
       .messages({ 'any.required': 'ALLOWED_APP_KEYS es obligatorio' }),
+    DEFAULT_APP_KEY: joi.string().optional(),
     FRONTEND_URL: joi.string().uri().optional(),
     STRIPE_API_KEY: joi.string().optional(),
     STRIPE_WEBHOOK_SECRET: joi.string().optional(),
@@ -50,6 +52,17 @@ if (error) {
 
 const envVars: EnvVars = value;
 
+const allowedAppKeys = envVars.ALLOWED_APP_KEYS.split(',')
+  .map((key) => key.trim().toLowerCase())
+  .filter(Boolean);
+
+const normalizedDefaultAppKey =
+  envVars.DEFAULT_APP_KEY?.trim().toLowerCase() || null;
+
+if (normalizedDefaultAppKey && !allowedAppKeys.includes(normalizedDefaultAppKey)) {
+  throw new Error('DEFAULT_APP_KEY debe estar dentro de ALLOWED_APP_KEYS');
+}
+
 export const envs = {
   port: envVars.PORT,
   dbPort: envVars.DB_PORT,
@@ -57,9 +70,8 @@ export const envs = {
   dbName: envVars.DB_NAME,
   jwtSecret: envVars.JWT_SECRET,
   resendApiKey: envVars.RESEND_API_KEY,
-  allowedAppKeys: envVars.ALLOWED_APP_KEYS.split(',')
-    .map((key) => key.trim().toLowerCase())
-    .filter(Boolean),
+  allowedAppKeys,
+  defaultAppKey: normalizedDefaultAppKey,
   frontendUrl: envVars.FRONTEND_URL,
   stripeApiKey: envVars.STRIPE_API_KEY,
   stripeWebhookSecret: envVars.STRIPE_WEBHOOK_SECRET,

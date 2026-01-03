@@ -1,9 +1,9 @@
-import { IsNotEmpty, IsString, IsUrl } from 'class-validator';
+import { IsNotEmpty, IsOptional, IsString, IsUrl } from 'class-validator';
 
 export class CreateCheckoutSessionDto {
+  @IsOptional()
   @IsString()
-  @IsNotEmpty()
-  appKey: string;
+  appKey?: string;
 
   @IsString()
   @IsNotEmpty()

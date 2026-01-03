@@ -4,6 +4,7 @@ import { envs } from '@/config';
 @Injectable()
 export class AppKeyValidator {
   private readonly allowed = new Set(envs.allowedAppKeys);
+  private readonly defaultAppKey = envs.defaultAppKey;
 
   constructor() {
     if (!this.allowed.size) {
@@ -13,12 +14,20 @@ export class AppKeyValidator {
     }
   }
 
-  validate(appKey: string): string {
-    if (!appKey) {
+  private resolveAppKey(appKey?: string): string | null {
+    if (appKey && appKey.trim()) {
+      return appKey;
+    }
+    return this.defaultAppKey;
+  }
+
+  validate(appKey?: string): string {
+    const candidate = this.resolveAppKey(appKey);
+    if (!candidate) {
       throw new UnauthorizedException('appKey es requerido');
     }
 
-    const normalized = appKey.trim().toLowerCase();
+    const normalized = candidate.trim().toLowerCase();
 
     if (!this.allowed.has(normalized)) {
       throw new UnauthorizedException('appKey no permitido');

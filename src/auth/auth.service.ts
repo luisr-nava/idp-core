@@ -11,7 +11,7 @@ import { User, UserRole } from './entities/user.entity';
 import { VerificationCode } from './entities/verification-code.entity';
 import { PasswordReset } from './entities/password-reset.entity';
 import { TokenBlacklist } from './entities/token-blacklist.entity';
-import { In, LessThan, Repository } from 'typeorm';
+import { DeepPartial, In, LessThan, Repository } from 'typeorm';
 import { CreateUserDto } from './dto/create-user.dto';
 import * as bcrypt from 'bcrypt';
 import { LoginDto } from './dto/login.dto';
@@ -55,15 +55,10 @@ export class AuthService {
     private readonly subscriptionService: SubscriptionService,
   ) {}
   async createUser(createUserDto: CreateUserDto & { ownerId?: string }) {
-    const {
-      password,
-      role: providedRole,
-      stripeCustomerId,
-      ownerId,
-      appKey,
-      ...user
-    } = createUserDto;
-    const role = providedRole || UserRole.EMPLOYEE;
+    const { password, role: roleInput, ownerId, appKey, ...user } =
+      createUserDto;
+    const role = this.normalizeRole(roleInput);
+
     const normalizedAppKey = this.subscriptionService.validateAppKey(appKey);
 
     // Validar que el email no exista (OWNER global, EMPLOYEE global)
@@ -78,14 +73,16 @@ export class AuthService {
       await this.validateOwnerEmailUnique(user.email, normalizedAppKey);
     }
 
-    const newUser = this.authRepository.create({
+    const createUserPayload: DeepPartial<User> = {
       ...user,
-      role,
-      ownerId: role === UserRole.EMPLOYEE ? ownerId ?? null : null,
+      salary: user.salary,
+      role: role ?? UserRole.OWNER,
+      hireDate: user.hireDate ? new Date(user.hireDate) : undefined,
       appKey: normalizedAppKey,
-      stripeCustomerId: role === UserRole.OWNER ? stripeCustomerId ?? null : null,
       password: bcrypt.hashSync(password, 10),
-    });
+    };
+
+    const newUser = this.authRepository.create(createUserPayload);
 
     const savedUser = await this.authRepository.save(newUser);
 
@@ -118,6 +115,17 @@ export class AuthService {
         'Usuario creado correctamente. Se ha enviado un código de verificación a tu email',
       userId: savedUser.id,
     };
+  }
+
+  private normalizeRole(role?: string): UserRole | undefined {
+    if (!role) {
+      return undefined;
+    }
+
+    const normalized = role.toUpperCase();
+    return Object.values(UserRole).includes(normalized as UserRole)
+      ? (normalized as UserRole)
+      : undefined;
   }
 
   async login(loginDto: LoginDto) {
@@ -180,10 +188,10 @@ export class AuthService {
       lastLogin: new Date(),
     });
 
-    const {
-      ownerId,
-      subscription,
-    } = await this.resolveSubscriptionContext(user, normalizedAppKey);
+    const { ownerId, subscription } = await this.resolveSubscriptionContext(
+      user,
+      normalizedAppKey,
+    );
 
     const token = this.getJwtToken({
       userId: user.id,
@@ -212,13 +220,7 @@ export class AuthService {
 
   async update(id: string, updateUserDto: UpdateUserDto) {
     // SEGURIDAD: Excluir campos sensibles que no deben ser actualizables directamente
-    const {
-      password,
-      role,
-      isVerify,
-      stripeCustomerId,
-      ...user
-    } = updateUserDto;
+    const { password, role, isVerify, ...user } = updateUserDto;
 
     const existingUser = await this.authRepository.findOneBy({ id });
 
@@ -231,20 +233,17 @@ export class AuthService {
       await this.validateUserExistence(user.email, existingUser.appKey);
     }
 
-    // Hashear password si viene
-    const updatedData: Partial<User> = { ...user };
-
-    if (existingUser.role === UserRole.OWNER && stripeCustomerId !== undefined) {
-      updatedData.stripeCustomerId = stripeCustomerId;
-    } else if (existingUser.role !== UserRole.OWNER) {
-      updatedData.stripeCustomerId = null;
-    }
-
     if (password) {
-      updatedData.password = await bcrypt.hash(password, 10);
+      updateUserDto.password = await bcrypt.hash(password, 10);
     }
 
-    await this.authRepository.update(id, updatedData);
+    const userUpdatePayload = {
+      ...user,
+      salary: user.salary,
+      hireDate: this.stringifyDate(user.hireDate),
+    };
+
+    await this.authRepository.update(id, userUpdatePayload);
 
     return { success: true, message: 'Usuario actualizado correctamente.' };
   }
@@ -279,7 +278,9 @@ export class AuthService {
     });
 
     if (!employees.length) {
-      throw new NotFoundException('No se encontraron empleados para este owner');
+      throw new NotFoundException(
+        'No se encontraron empleados para este owner',
+      );
     }
 
     return employees;
@@ -320,14 +321,15 @@ export class AuthService {
     }
 
     // Preparar datos a actualizar
-    const dataToUpdate: Partial<User> = {
+    const dataToUpdate = {
       ...updateData,
-      stripeCustomerId: null,
+      salary: updateData.salary,
+      hireDate: this.stringifyDate(updateData.hireDate),
     };
 
     // Hashear password si viene
     if (password) {
-      dataToUpdate.password = await bcrypt.hash(password, 10);
+      updateUserDto.password = await bcrypt.hash(password, 10);
     }
 
     // Actualizar empleado
@@ -608,7 +610,8 @@ export class AuthService {
       );
       return {
         success: true,
-        message: 'Si los datos son correctos, recibirás instrucciones en tu email',
+        message:
+          'Si los datos son correctos, recibirás instrucciones en tu email',
       };
     }
 
@@ -622,7 +625,8 @@ export class AuthService {
       );
       return {
         success: true,
-        message: 'Si los datos son correctos, recibirás instrucciones en tu email',
+        message:
+          'Si los datos son correctos, recibirás instrucciones en tu email',
       };
     }
 
@@ -661,7 +665,8 @@ export class AuthService {
 
     return {
       success: true,
-      message: 'Si los datos son correctos, recibirás instrucciones en tu email',
+      message:
+        'Si los datos son correctos, recibirás instrucciones en tu email',
     };
   }
 
@@ -757,7 +762,12 @@ export class AuthService {
     await this.verificationCodeRepository.save(verificationCode);
 
     // Enviar el email con el código
-    await this.mailService.sendVerificationEmail(email, code, fullName, contextName);
+    await this.mailService.sendVerificationEmail(
+      email,
+      code,
+      fullName,
+      contextName,
+    );
   }
 
   private async validateUserExistence(
@@ -774,12 +784,17 @@ export class AuthService {
     }
   }
 
-  private async validateOwnerEmailUnique(email: string, appKey: string): Promise<void> {
+  private async validateOwnerEmailUnique(
+    email: string,
+    appKey: string,
+  ): Promise<void> {
     const userExist = await this.authRepository.findOne({
       where: { email, appKey },
     });
     if (userExist) {
-      throw new ConflictException(`El email ${email} ya está registrado en esta app.`);
+      throw new ConflictException(
+        `El email ${email} ya está registrado en esta app.`,
+      );
     }
   }
 
@@ -831,7 +846,9 @@ export class AuthService {
     });
 
     if (existing && existing.userId !== user.id) {
-      throw new ConflictException('El documento ya está asociado a otro usuario');
+      throw new ConflictException(
+        'El documento ya está asociado a otro usuario',
+      );
     }
 
     const userDoc = await this.identityDocumentRepository.findOne({
@@ -859,7 +876,9 @@ export class AuthService {
   }
 
   private normalizeDocumentNumber(documentNumber: string): string {
-    const normalized = documentNumber.replace(/[^a-zA-Z0-9]/g, '').toUpperCase();
+    const normalized = documentNumber
+      .replace(/[^a-zA-Z0-9]/g, '')
+      .toUpperCase();
     if (!normalized) {
       throw new BadRequestException('documentNumber no puede quedar vacío');
     }
@@ -872,6 +891,13 @@ export class AuthService {
 
   private hashToken(token: string): string {
     return crypto.createHash('sha256').update(token).digest('hex');
+  }
+
+  private stringifyDate(value?: Date | string | null): string | undefined {
+    if (value === null || value === undefined) {
+      return undefined;
+    }
+    return value instanceof Date ? value.toISOString() : value;
   }
 
   private sanitizeUser(user: User) {

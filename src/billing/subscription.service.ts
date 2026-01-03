@@ -26,6 +26,7 @@ interface SubscriptionUpsertInput {
 export class SubscriptionService {
   private readonly logger = new Logger(SubscriptionService.name);
   private readonly allowedAppKeys = new Set(envs.allowedAppKeys);
+  private readonly defaultAppKey = envs.defaultAppKey;
 
   constructor(
     @InjectRepository(Subscription)
@@ -187,9 +188,20 @@ export class SubscriptionService {
     return appKey.trim().toLowerCase();
   }
 
-  validateAppKey(appKey: string): string {
-    const normalized = this.normalizeAppKey(appKey);
-    if (!normalized || !this.allowedAppKeys.has(normalized)) {
+  private resolveAppKeyCandidate(appKey?: string): string | null {
+    if (appKey && appKey.trim()) {
+      return appKey;
+    }
+    return this.defaultAppKey;
+  }
+
+  validateAppKey(appKey?: string): string {
+    const candidate = this.resolveAppKeyCandidate(appKey);
+    if (!candidate) {
+      throw new UnauthorizedException('appKey es requerido');
+    }
+    const normalized = this.normalizeAppKey(candidate);
+    if (!this.allowedAppKeys.has(normalized)) {
       throw new UnauthorizedException('appKey no permitido');
     }
     return normalized;
